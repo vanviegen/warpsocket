@@ -1,3 +1,3 @@
-# `@ws-broker/darwin-arm64`
+# `@wsbroker/darwin-arm64`
 
-Prebuilt binary package for `ws-broker` on `darwin-arm64`.
+Prebuilt binary package for `wsbroker` on `darwin-arm64`.

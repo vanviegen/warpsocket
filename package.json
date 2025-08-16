@@ -1,5 +1,5 @@
 {
-  "name": "ws-broker",
+  "name": "wsbroker",
   "version": "0.1.0",
   "description": "",
   "main": "./lib/index.cjs",
@@ -15,7 +15,9 @@
     "prepack": "tsc &&neon update",
     "version": "neon bump --binaries platforms && git add .",
     "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
-    "dryrun": "gh workflow run publish.yml -f dryrun=true"
+    "dryrun": "gh workflow run publish.yml -f dryrun=true",
+    "docs": "readme-tsdoc",
+    "prepublishOnly": "npm run docs"
   },
   "author": "",
   "license": "MIT",
@@ -43,11 +45,12 @@
     "@neon-rs/cli": "^0.1.82",
     "@tsconfig/node20": "^20.1.4",
     "@types/node": "^20.11.16",
+    "readme-tsdoc": "^1.1.4",
     "typescript": "^5.3.3"
   },
   "neon": {
     "type": "library",
-    "org": "@ws-broker",
+    "org": "@wsbroker",
     "platforms": "common",
     "load": "./src/load.cts"
   }

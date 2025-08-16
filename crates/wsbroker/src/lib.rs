@@ -18,20 +18,20 @@ use neon::event::Channel;
 use std::sync::Arc;
 
 lazy_static! {
-    // Maps channel names to sets of connection IDs subscribed to each channel
+    // Maps channel names to sets of socket IDs subscribed to each channel
     static ref CHANNELS: DashMap<Vec<u8>, HashSet<u64>> = DashMap::new();
-    // Maps connection IDs to their WebSocket senders
-    static ref CONNECTION_SENDERS: DashMap<u64, tokio::sync::Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<hyper::upgrade::Upgraded>, Message>>> = DashMap::new();
-    // Maps connection IDs to their authentication tokens
-    static ref CONNECTION_TOKENS: DashMap<u64, Vec<u8>> = DashMap::new();
+    // Maps socket IDs to their WebSocket senders
+    static ref SOCKET_SENDERS: DashMap<u64, tokio::sync::Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<hyper::upgrade::Upgraded>, Message>>> = DashMap::new();
+    // Maps socket IDs to their authentication tokens
+    static ref SOCKET_TOKENS: DashMap<u64, Vec<u8>> = DashMap::new();
     // Maps worker thread IDs to their associated WorkerThread instances
     static ref WORKERS: DashMap<u64, WorkerThread> = DashMap::new();
     // Holds the server task handle to allow server shutdown/management
     static ref SERVER_HANDLE: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>> = Arc::new(RwLock::new(None));
 }
 
-// Atomic counter for generating unique connection IDs
-static CONNECTION_COUNTER: AtomicU64 = AtomicU64::new(0);
+// Atomic counter for generating unique socket IDs
+static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Atomic counter for generating unique worker thread IDs
 static WORKER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -105,11 +105,11 @@ fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 fn send(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let connection_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
+    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
     let arg1 = cx.argument::<JsValue>(1)?;
     let data = get_buffer_data(&mut cx, arg1)?;
     
-    if let Some(sender_ref) = CONNECTION_SENDERS.get(&connection_id) {
+    if let Some(sender_ref) = SOCKET_SENDERS.get(&socket_id) {
         // This requires a spawn, as the sender must be used in an async context
         tokio::spawn(async move {
             let mut guard = sender_ref.lock().await;
@@ -132,8 +132,8 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         // This requires a spawn, as the sender must be used in an async context
         tokio::spawn(async move {
             let message = Message::Binary(data);
-            for connection_id in subscriber_ids {
-                if let Some(sender_ref) = CONNECTION_SENDERS.get(&connection_id) {
+            for socket_id in subscriber_ids {
+                if let Some(sender_ref) = SOCKET_SENDERS.get(&socket_id) {
                     let mut guard = sender_ref.lock().await;
                     let _ = guard.send(message.clone()).await;
                 }
@@ -145,22 +145,22 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 fn subscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let connection_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
+    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
     let arg1 = cx.argument::<JsValue>(1)?;
     let channel_name = get_buffer_data(&mut cx, arg1)?;
     
-    let was_inserted = CHANNELS.entry(channel_name).or_insert_with(HashSet::new).insert(connection_id);
+    let was_inserted = CHANNELS.entry(channel_name).or_insert_with(HashSet::new).insert(socket_id);
     
     Ok(cx.boolean(was_inserted))
 }
 
 fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let connection_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
+    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
     let arg1 = cx.argument::<JsValue>(1)?;
     let channel_name = get_buffer_data(&mut cx, arg1)?;
     
     let was_removed = if let Some(mut channel) = CHANNELS.get_mut(&channel_name) {
-        channel.remove(&connection_id)
+        channel.remove(&socket_id)
     } else {
         false
     };
@@ -169,11 +169,11 @@ fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 }
 
 fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let connection_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
+    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
     let arg1 = cx.argument::<JsValue>(1)?;
     let token = get_buffer_data(&mut cx, arg1)?;
     
-    CONNECTION_TOKENS.insert(connection_id, token);
+    SOCKET_TOKENS.insert(socket_id, token);
     
     Ok(cx.undefined())
 }
@@ -386,10 +386,10 @@ async fn handle_websocket(upgraded: Upgraded) {
     };
     
     let (ws_sender, mut ws_receiver) = ws_stream.split();
-    let connection_id = CONNECTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let socket_id = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
     
     // Store the WebSocket sender in global map
-    CONNECTION_SENDERS.insert(connection_id, tokio::sync::Mutex::new(ws_sender));
+    SOCKET_SENDERS.insert(socket_id, tokio::sync::Mutex::new(ws_sender));
 
     // Select a worker for this connection, and keep using it consistently
     let worker_id = simple_rng() % WORKERS.len() as u64;
@@ -399,11 +399,11 @@ async fn handle_websocket(upgraded: Upgraded) {
         match msg {
             Ok(Message::Text(text)) => {
                 let worker = WORKERS.get(&worker_id).unwrap();
-                handle_socket_message(&worker, connection_id, MessageData::Text(text)).await;
+                handle_socket_message(&worker, socket_id, MessageData::Text(text)).await;
             }
             Ok(Message::Binary(data)) => {
                 let worker = WORKERS.get(&worker_id).unwrap();
-                handle_socket_message(&worker, connection_id, MessageData::Binary(data)).await;
+                handle_socket_message(&worker, socket_id, MessageData::Binary(data)).await;
             }
             Ok(Message::Close(_)) => break,
             _ => {}
@@ -411,12 +411,12 @@ async fn handle_websocket(upgraded: Upgraded) {
     }
     
     // Get token before cleanup
-    let token = CONNECTION_TOKENS.get(&connection_id)
+    let token = SOCKET_TOKENS.get(&socket_id)
         .map(|entry| entry.clone());
     
     // Cleanup
-    CONNECTION_SENDERS.remove(&connection_id);
-    CONNECTION_TOKENS.remove(&connection_id);
+    SOCKET_SENDERS.remove(&socket_id);
+    SOCKET_TOKENS.remove(&socket_id);
     
     // Call close handler
     let worker = WORKERS.get(&worker_id).unwrap();
@@ -425,7 +425,7 @@ async fn handle_websocket(upgraded: Upgraded) {
         
         worker.channel.send(move |mut cx| {
             let callback = handler.to_inner(&mut cx);
-            let js_socket_id = cx.number(connection_id as f64);
+            let js_socket_id = cx.number(socket_id as f64);
             
             let js_token = match token {
                 Some(ref token_data) => create_js_buffer(&mut cx, token_data)?.upcast::<JsValue>(),
@@ -439,10 +439,10 @@ async fn handle_websocket(upgraded: Upgraded) {
     }
 }
 
-async fn handle_socket_message(worker: &WorkerThread, connection_id: u64, message_data: MessageData) {
+async fn handle_socket_message(worker: &WorkerThread, socket_id: u64, message_data: MessageData) {
     if let Some(handler) = &worker.socket_handler {
         let handler = Arc::clone(handler);
-        let token = CONNECTION_TOKENS.get(&connection_id)
+        let token = SOCKET_TOKENS.get(&socket_id)
             .map(|entry| entry.clone());
         
         worker.channel.send(move |mut cx| {
@@ -457,7 +457,7 @@ async fn handle_socket_message(worker: &WorkerThread, connection_id: u64, messag
                 }
             };
             
-            let js_socket_id = cx.number(connection_id as f64);
+            let js_socket_id = cx.number(socket_id as f64);
             
             let js_token = match token {
                 Some(ref token_data) => create_js_buffer(&mut cx, token_data)?.upcast::<JsValue>(),
@@ -481,7 +481,7 @@ fn cleanup_disconnected_connections() {
     
     for mut entry in CHANNELS.iter_mut() {
         let subscribers = entry.value_mut();
-        subscribers.retain(|connection_id| CONNECTION_SENDERS.contains_key(connection_id));
+        subscribers.retain(|socket_id| SOCKET_SENDERS.contains_key(socket_id));
         
         if subscribers.is_empty() {
             to_remove.push(entry.key().clone());

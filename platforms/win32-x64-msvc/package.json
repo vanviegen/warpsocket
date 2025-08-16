@@ -1,6 +1,6 @@
 {
-  "name": "@ws-broker/win32-x64-msvc",
-  "description": "Prebuilt binary package for `ws-broker` on `win32-x64-msvc`.",
+  "name": "@wsbroker/win32-x64-msvc",
+  "description": "Prebuilt binary package for `wsbroker` on `win32-x64-msvc`.",
   "version": "0.1.0",
   "os": [
     "win32"

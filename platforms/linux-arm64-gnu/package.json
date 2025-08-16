@@ -1,6 +1,6 @@
 {
-  "name": "@ws-broker/linux-arm64-gnu",
-  "description": "Prebuilt binary package for `ws-broker` on `linux-arm64-gnu`.",
+  "name": "@wsbroker/linux-arm64-gnu",
+  "description": "Prebuilt binary package for `wsbroker` on `linux-arm64-gnu`.",
   "version": "0.1.0",
   "os": [
     "linux"

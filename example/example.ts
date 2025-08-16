@@ -31,21 +31,5 @@ const worker = {
 wsbroker.registerWorkerThread(worker);
 
 // Start the server
-try {
-    wsbroker.start({ bind: '0.0.0.0:3000' });
-    console.log('WebSocket broker started on port 3000');
-    
-    // Test some functions
-    setTimeout(() => {
-        console.log('Testing broker functions...');
-        
-        // These would work once we have actual connections
-        // wsbroker.send(1, new Uint8Array(Buffer.from('test message')));
-        // wsbroker.subscribe(1, new Uint8Array(Buffer.from('test-channel')));
-        
-        console.log('Broker is running. Connect WebSocket clients to ws://localhost:3000');
-    }, 100000);
-    
-} catch (error) {
-    console.error('Failed to start broker:', error);
-}
+wsbroker.start({ bind: '0.0.0.0:3000' });
+console.log('WebSocket broker started on port 3000');    

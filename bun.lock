@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "ws-broker",
+      "name": "wsbroker",
       "dependencies": {
         "@neon-rs/load": "^0.1.82",
       },

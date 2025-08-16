@@ -1,6 +1,6 @@
 {
-  "name": "@ws-broker/darwin-arm64",
-  "description": "Prebuilt binary package for `ws-broker` on `darwin-arm64`.",
+  "name": "@wsbroker/darwin-arm64",
+  "description": "Prebuilt binary package for `wsbroker` on `darwin-arm64`.",
   "version": "0.1.0",
   "os": [
     "darwin"
