@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WSBroker Multi-Room Chat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>WSBroker Multi-Room Chat</h1>
+        </header>
+
+        <!-- Join form - shown initially -->
+        <div id="join-form" class="form-container">
+            <h2>Join a Chat Room</h2>
+            <form id="join-room-form">
+                <div class="input-group">
+                    <label for="alias">Your Alias:</label>
+                    <input type="text" id="alias" required placeholder="Enter your nickname" maxlength="20">
+                </div>
+                <div class="input-group">
+                    <label for="room">Room Name:</label>
+                    <input type="text" id="room" required placeholder="Enter room name" maxlength="30">
+                </div>
+                <button type="submit">Join Room</button>
+            </form>
+        </div>
+
+        <!-- Chat interface - hidden initially -->
+        <div id="chat-interface" class="chat-container" style="display: none;">
+            <div class="chat-header">
+                <h2 id="room-title">Room: </h2>
+                <div class="user-info">
+                    <span id="user-alias"></span>
+                    <button id="leave-room" class="leave-btn">Leave Room</button>
+                </div>
+            </div>
+
+            <div id="messages" class="messages-container">
+                <!-- Messages will be added here dynamically -->
+            </div>
+
+            <div class="message-input-container">
+                <form id="message-form">
+                    <input type="text" id="message-input" placeholder="Type your message..." required maxlength="500">
+                    <button type="submit">Send</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Connection status -->
+        <div id="status" class="status">
+            <span id="connection-status">Connecting...</span>
+        </div>
+    </div>
+
+    <script src="chat-client.js"></script>
+</body>
+</html>
