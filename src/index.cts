@@ -17,61 +17,24 @@ declare module "./load.cjs" {
 }
 
 /**
- * Interface that worker threads must implement to handle HTTP requests and WebSocket events.
+ * Interface that worker threads must implement to handle WebSocket events.
  * All handler methods are optional - if not provided, the respective functionality will be unavailable.
  */
 export interface WorkerInterface {
-  /**
-   * Handles incoming HTTP requests.
-   * @param request - The HTTP request details
-   * @returns The HTTP response object, or void for default 200 OK response
-   */
-  handleHttpRequest?(request: HttpRequest): HttpResponse | void;
-  
   /**
    * Handles incoming WebSocket messages from clients.
    * @param data - The message data (Buffer for binary, string for text)
    * @param socketId - The unique identifier of the WebSocket connection
    * @param token - The authentication token associated with the connection (if any)
    */
-  handleSocketMessage?(data: Uint8Array | string, socketId: number, token?: Uint8Array): void;
+  handleMessage?(data: Uint8Array | string, socketId: number, token?: Uint8Array): void;
   
   /**
    * Handles WebSocket connection closures.
    * @param socketId - The unique identifier of the closed WebSocket connection
    * @param token - The authentication token associated with the connection (if any)
    */
-  handleSocketClose?(socketId: number, token?: Uint8Array): void;
-}
-
-/** HTTP request object with Node.js-compatible properties */
-export interface HttpRequest {
-  /** HTTP method (GET, POST, etc.) */
-  method: string;
-  /** Full URL path including query string */
-  url: string;
-  /** Request path without query parameters */
-  path: string;
-  /** Request path without query parameters (alias for path) */
-  pathname: string;
-  /** Query string with leading '?' (if present) */
-  search?: string;
-  /** Query string parameters (raw string) */
-  query?: string;
-  /** HTTP headers as key-value pairs (case-insensitive access) */
-  headers: Record<string, string>;
-  /** Request body as binary data */
-  body: Uint8Array;
-}
-
-/** HTTP response object that handlers should populate */
-export interface HttpResponse {
-  /** HTTP status code */
-  status: number;
-  /** Response headers as key-value pairs */
-  headers: Record<string, string>;
-  /** Response body (string, Buffer, ArrayBuffer, or Uint8Array) */
-  body: string | Uint8Array | ArrayBuffer;
+  handleClose?(socketId: number, token?: Uint8Array): void;
 }
 
 // Export the native addon functions with proper TypeScript bindings
@@ -83,7 +46,7 @@ export interface HttpResponse {
 export const start = addon.start;
 
 /** 
- * Registers a worker thread with the broker to handle HTTP requests and WebSocket messages.
+ * Registers a worker thread with the broker to handle WebSocket messages.
  * At least one worker must be registered before starting the server.
  * @param worker - Worker interface implementation with optional handlers
  */

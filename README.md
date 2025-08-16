@@ -1,25 +1,21 @@
 # WSBroker
 
-A high-performance WebSocket broker built with Rust and Node.js using Neon bindings. WSBroker provides a scalable real-time messaging infrastructure with channel-based pub/sub functionality, HTTP request handling, and multi-worker thread support.
+Node-API addon for writing high-performance multi-threaded WebSocket servers.
 
-## What is WSBroker?
+How does this work?
 
-WSBroker is a WebSocket server that acts as a message broker between clients, enabling real-time communication patterns like:
+- WebSocket connections are accepted and managed by WSBroker's multi-threaded Rust code.
+- Incoming WebSocket messages (and other events) are handed off to JavaScript callback methods, allowing you to write application logic.
+- Your application logic can call WBroker functions for:
+  - Sending messages to specific WebSocket connections.
+  - Subscribing connections to named channels.
+  - Attaching a token (meta information) to a connection.
+  - Broadcasting to these named channels.
+- JavaScript callbacks can be load-balanced across multiple worker threads.
 
-- **Pub/Sub messaging**: Clients can subscribe to channels and receive messages published to those channels
-- **Direct messaging**: Send messages directly to specific WebSocket connections
-- **HTTP handling**: Process HTTP requests alongside WebSocket connections
-- **Authentication**: Token-based authentication for WebSocket connections
-- **Load balancing**: Multi-worker thread architecture for handling concurrent connections
-
-## Why Use WSBroker?
-
-- **High Performance**: Built in Rust for maximum speed and minimal memory overhead
-- **Scalable**: Multi-worker architecture distributes load across threads
-- **Flexible**: Supports both HTTP and WebSocket protocols in a single server
-- **Type Safe**: Full TypeScript support with comprehensive type definitions
-- **Real-time**: Sub-millisecond message routing between connected clients
-- **Cross-platform**: Supports Windows, macOS, and Linux through native binaries
+So what WSBroker buys you compared to the standard Node.js WebSocket library (`ws`):
+- More performant and memory efficient connection handling.
+- Multi-threading, while still allowing you to efficiently send/broadcast to any WebSocket connection.
 
 ## Quick Start
 
@@ -36,15 +32,7 @@ import { registerWorkerThread, start, sendToChannel, subscribe } from 'wsbroker'
 
 // Create a worker to handle connections
 const worker = {
-  handleHttpRequest(request) {
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'Hello from WSBroker!' })
-    };
-  },
-
-  handleSocketMessage(data, socketId, token) {
+  handleMessage(data, socketId, token) {
     const message = Buffer.from(data).toString();
     console.log(`Message from ${socketId}: ${message}`);
     
@@ -55,7 +43,7 @@ const worker = {
     sendToChannel('general', `User ${socketId} says: ${message}`);
   },
 
-  handleSocketClose(socketId, token) {
+  handleClose(socketId, token) {
     console.log(`Connection ${socketId} closed`);
   }
 };
@@ -84,100 +72,20 @@ The following is auto-generated from `src/index.cts`:
 
 ### WorkerInterface · interface
 
-Interface that worker threads must implement to handle HTTP requests and WebSocket events.
+Interface that worker threads must implement to handle WebSocket events.
 All handler methods are optional - if not provided, the respective functionality will be unavailable.
 
-#### workerInterface.handleHttpRequest · member
-
-Handles incoming HTTP requests.
-
-**Type:** `(request: HttpRequest) => void | HttpResponse`
-
-#### workerInterface.handleSocketMessage · member
+#### workerInterface.handleMessage · member
 
 Handles incoming WebSocket messages from clients.
 
 **Type:** `(data: string | Uint8Array<ArrayBufferLike>, socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
 
-#### workerInterface.handleSocketClose · member
+#### workerInterface.handleClose · member
 
 Handles WebSocket connection closures.
 
 **Type:** `(socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
-
-### HttpRequest · interface
-
-HTTP request object with Node.js-compatible properties
-
-#### httpRequest.method · member
-
-HTTP method (GET, POST, etc.)
-
-**Type:** `string`
-
-#### httpRequest.url · member
-
-Full URL path including query string
-
-**Type:** `string`
-
-#### httpRequest.path · member
-
-Request path without query parameters
-
-**Type:** `string`
-
-#### httpRequest.pathname · member
-
-Request path without query parameters (alias for path)
-
-**Type:** `string`
-
-#### httpRequest.search · member
-
-Query string with leading '?' (if present)
-
-**Type:** `string`
-
-#### httpRequest.query · member
-
-Query string parameters (raw string)
-
-**Type:** `string`
-
-#### httpRequest.headers · member
-
-HTTP headers as key-value pairs (case-insensitive access)
-
-**Type:** `Record<string, string>`
-
-#### httpRequest.body · member
-
-Request body as binary data
-
-**Type:** `Uint8Array<ArrayBufferLike>`
-
-### HttpResponse · interface
-
-HTTP response object that handlers should populate
-
-#### httpResponse.status · member
-
-HTTP status code
-
-**Type:** `number`
-
-#### httpResponse.headers · member
-
-Response headers as key-value pairs
-
-**Type:** `Record<string, string>`
-
-#### httpResponse.body · member
-
-Response body (string, Buffer, ArrayBuffer, or Uint8Array)
-
-**Type:** `string | ArrayBuffer | Uint8Array<ArrayBufferLike>`
 
 ### start · function
 
@@ -191,7 +99,7 @@ Starts the WebSocket broker server on the specified bind address.
 
 ### registerWorkerThread · function
 
-Registers a worker thread with the broker to handle HTTP requests and WebSocket messages.
+Registers a worker thread with the broker to handle WebSocket messages.
 At least one worker must be registered before starting the server.
 
 **Signature:** `(worker: WorkerInterface) => void`
@@ -278,7 +186,7 @@ Copies all subscribers from one channel to another channel.
 import { registerWorkerThread, start, sendToChannel, subscribe, unsubscribe } from 'wsbroker';
 
 const chatWorker = {
-  handleSocketMessage(data, socketId) {
+  handleMessage(data, socketId) {
     const message = JSON.parse(data.toString());
     
     switch (message.type) {
@@ -311,7 +219,7 @@ const chatWorker = {
     }
   },
   
-  handleSocketClose(socketId) {
+  handleClose(socketId) {
     // Auto-cleanup: WSBroker automatically removes closed connections from channels
     console.log(`User ${socketId} disconnected`);
   }
@@ -321,29 +229,14 @@ registerWorkerThread(chatWorker);
 start({ bind: '0.0.0.0:3000' });
 ```
 
-### Real-time API with Authentication
+### WebSocket Authentication Example
 
 ```typescript
 import { registerWorkerThread, start, send, setToken, subscribe } from 'wsbroker';
 import jwt from 'jsonwebtoken';
 
 const apiWorker = {
-  handleHttpRequest(request) {
-    if (request.path === '/auth' && request.method === 'POST') {
-      const body = JSON.parse(request.body.toString());
-      const token = jwt.sign({ userId: body.userId }, 'secret');
-      
-      return {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token })
-      };
-    }
-    
-    return { status: 404, headers: {}, body: 'Not Found' };
-  },
-  
-  handleSocketMessage(data, socketId, currentToken) {
+  handleMessage(data, socketId, currentToken) {
     const message = JSON.parse(data.toString());
     
     if (message.type === 'authenticate') {
@@ -383,8 +276,6 @@ WSBroker uses a multi-layered architecture:
 3. **Channel System**: Connections can subscribe to named channels (string or binary). Messages sent to a channel are automatically broadcasted to all subscribers.
 
 4. **Connection Management**: Each WebSocket connection gets a unique ID and can be associated with authentication tokens for secure operations.
-
-5. **Hybrid Protocol**: The same server handles both HTTP requests and WebSocket upgrades, allowing you to serve APIs and real-time features from one process.
 
 ### Performance Characteristics
 

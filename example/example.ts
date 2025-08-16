@@ -1,74 +1,8 @@
 const wsbroker = require('../index.node');
-const fs = require('fs');
-const path = require('path');
 
 // Create a worker for the multi-room chat server
 const chatWorker = {
-    handleHttpRequest(request: any) {
-        console.log('HTTP Request:', request.method, request.path);
-        
-        // Serve the chat client HTML file
-        if (request.path === '/' || request.path === '/index.html') {
-            try {
-                const htmlContent = fs.readFileSync(path.join(__dirname, 'chat-client.html'));
-                return {
-                    status: 200,
-                    headers: { 'content-type': 'text/html' },
-                    body: htmlContent
-                };
-            } catch (error) {
-                return {
-                    status: 404,
-                    headers: { 'content-type': 'text/plain' },
-                    body: 'Chat client not found'
-                };
-            }
-        }
-        
-        // Serve CSS file
-        if (request.path === '/style.css') {
-            try {
-                const cssContent = fs.readFileSync(path.join(__dirname, 'style.css'));
-                return {
-                    status: 200,
-                    headers: { 'content-type': 'text/css' },
-                    body: cssContent
-                };
-            } catch (error) {
-                return {
-                    status: 404,
-                    headers: { 'content-type': 'text/plain' },
-                    body: 'CSS file not found'
-                };
-            }
-        }
-        
-        // Serve JavaScript file
-        if (request.path === '/chat-client.js') {
-            try {
-                const jsContent = fs.readFileSync(path.join(__dirname, 'chat-client.js'));
-                return {
-                    status: 200,
-                    headers: { 'content-type': 'application/javascript' },
-                    body: jsContent
-                };
-            } catch (error) {
-                return {
-                    status: 404,
-                    headers: { 'content-type': 'text/plain' },
-                    body: 'JavaScript file not found'
-                };
-            }
-        }
-        
-        return {
-            status: 404,
-            headers: { 'content-type': 'text/plain' },
-            body: 'Not Found'
-        };
-    },
-    
-    handleSocketMessage(data: string | Uint8Array, socketId: number, token?: Uint8Array) {
+    handleMessage(data: string | Uint8Array, socketId: number, token?: Uint8Array) {
         try {
             const message = JSON.parse(Buffer.from(data).toString());
             console.log('Socket message from', socketId, ':', message);
@@ -155,7 +89,7 @@ const chatWorker = {
         }
     },
     
-    handleSocketClose(socketId: number, token?: Uint8Array) {
+    handleClose(socketId: number, token?: Uint8Array) {
         console.log('Socket closed:', socketId);
         
         // Parse user info from token if available
@@ -185,4 +119,5 @@ wsbroker.registerWorkerThread(chatWorker);
 
 // Start the server
 wsbroker.start({ bind: '0.0.0.0:3000' });
-console.log('Multi-room chat server started on http://localhost:3000');    
+console.log('WebSocket chat server started on ws://localhost:3000');
+console.log('Connect using a WebSocket client to test the multi-room chat functionality.');    

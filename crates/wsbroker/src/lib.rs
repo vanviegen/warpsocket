@@ -3,12 +3,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::time;
-use tokio_tungstenite::accept_async;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
-use hyper::{Body, Request, Response, Server, StatusCode};
-use hyper::service::{make_service_fn, service_fn};
-use hyper::upgrade::Upgraded;
+use tokio::net::{TcpListener, TcpStream};
 use dashmap::DashMap;
 use lazy_static::lazy_static;
 use parking_lot::RwLock;
@@ -21,7 +18,7 @@ lazy_static! {
     // Maps channel names to sets of socket IDs subscribed to each channel
     static ref CHANNELS: DashMap<Vec<u8>, HashSet<u64>> = DashMap::new();
     // Maps socket IDs to their WebSocket senders
-    static ref SOCKET_SENDERS: DashMap<u64, tokio::sync::Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<hyper::upgrade::Upgraded>, Message>>> = DashMap::new();
+    static ref SOCKET_SENDERS: DashMap<u64, tokio::sync::Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>>> = DashMap::new();
     // Maps socket IDs to their authentication tokens
     static ref SOCKET_TOKENS: DashMap<u64, Vec<u8>> = DashMap::new();
     // Maps worker thread IDs to their associated WorkerThread instances
@@ -38,7 +35,6 @@ static WORKER_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone)]
 struct WorkerThread {
     channel: Channel,
-    http_handler: Option<Arc<Root<JsFunction>>>,
     socket_handler: Option<Arc<Root<JsFunction>>>,
     close_handler: Option<Arc<Root<JsFunction>>>,
 }
@@ -84,17 +80,14 @@ fn start(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let worker_obj = cx.argument::<JsObject>(0)?;
     
-    let http_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleHttpRequest")?
+    let socket_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleMessage")?
         .map(|f| Arc::new(f.root(&mut cx)));
-    let socket_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleSocketMessage")?
-        .map(|f| Arc::new(f.root(&mut cx)));
-    let close_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleSocketClose")?
+    let close_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleClose")?
         .map(|f| Arc::new(f.root(&mut cx)));
     
     let worker_id = WORKER_COUNTER.fetch_add(1, Ordering::Relaxed);
     let worker = WorkerThread {
         channel: cx.channel(),
-        http_handler,
         socket_handler,
         close_handler,
     };
@@ -228,156 +221,23 @@ async fn start_server(bind_addr: SocketAddr) {
         }
     });
     
-    let make_svc = make_service_fn(|_conn| {
-        async move {
-            Ok::<_, hyper::Error>(service_fn(handle_request))
+    let listener = match TcpListener::bind(&bind_addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("Failed to bind to {}: {}", bind_addr, e);
+            return;
         }
-    });
+    };
     
-    let server = Server::bind(&bind_addr).serve(make_svc);
-    println!("WebSocket Broker listening on {}", bind_addr);
+    println!("WebSocket Server listening on {}", bind_addr);
     
-    if let Err(e) = server.await {
-        eprintln!("Server error: {}", e);
+    while let Ok((stream, _)) = listener.accept().await {
+        tokio::spawn(handle_connection(stream));
     }
 }
 
-async fn handle_request(mut req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-    if is_websocket_upgrade(&req) {
-        match hyper::upgrade::on(&mut req).await {
-            Ok(upgraded) => {
-                tokio::spawn(handle_websocket(upgraded));
-                Ok(Response::builder()
-                    .status(StatusCode::SWITCHING_PROTOCOLS)
-                    .header("upgrade", "websocket")
-                    .header("connection", "upgrade")
-                    .body(Body::empty())
-                    .unwrap())
-            }
-            Err(_) => Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Body::from("Failed to upgrade to WebSocket"))
-                .unwrap()),
-        }
-    } else {
-        handle_http_request(req).await
-    }
-}
-
-fn is_websocket_upgrade(req: &Request<Body>) -> bool {
-    req.headers().get("connection")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_lowercase().contains("upgrade"))
-        .unwrap_or(false)
-    && req.headers().get("upgrade")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_lowercase() == "websocket")
-        .unwrap_or(false)
-}
-
-async fn handle_http_request(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-    let worker_id = simple_rng() % WORKERS.len() as u64;    
-    let worker = WORKERS.get(&worker_id).unwrap();
-
-    if let Some(handler) = &worker.http_handler {
-        let method = req.method().to_string();
-        let uri = req.uri();
-        let path = uri.path().to_string();
-        let query = uri.query().map(|s| s.to_string());
-        
-        let mut headers = Vec::new();
-        for (name, value) in req.headers() {
-            if let Ok(value_str) = value.to_str() {
-                headers.push((name.to_string(), value_str.to_string()));
-            }
-        }
-        
-        let body_bytes = hyper::body::to_bytes(req.into_body()).await
-            .unwrap_or_default().to_vec();
-        
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handler = Arc::clone(handler);
-        
-        worker.channel.send(move |mut cx| {
-            let callback = handler.to_inner(&mut cx);
-            
-            let js_request = cx.empty_object();
-            let method_str = cx.string(&method);
-            js_request.set(&mut cx, "method", method_str)?;
-            let path_str = cx.string(&path);
-            js_request.set(&mut cx, "path", path_str)?;
-            
-            if let Some(query) = &query {
-                let query_str = cx.string(query);
-                js_request.set(&mut cx, "query", query_str)?;
-            }
-            
-            let js_headers = cx.empty_object();
-            for (name, value) in &headers {
-                let name_str = cx.string(value);
-                js_headers.set(&mut cx, name.as_str(), name_str)?;
-            }
-            js_request.set(&mut cx, "headers", js_headers)?;
-            
-            let mut js_body = cx.buffer(body_bytes.len())?;
-            js_body.as_mut_slice(&mut cx).copy_from_slice(&body_bytes);
-            js_request.set(&mut cx, "body", js_body)?;
-            
-            let undefined_val = cx.undefined();
-            let result = callback.call(&mut cx, undefined_val, vec![js_request.upcast()])?;
-            
-            let response = if let Ok(response_obj) = result.downcast::<JsObject, _>(&mut cx) {
-                let status = response_obj.get::<JsNumber, _, _>(&mut cx, "status")?
-                    .value(&mut cx) as u16;
-                
-                let headers_obj = response_obj.get::<JsObject, _, _>(&mut cx, "headers")?;
-                let mut response_builder = Response::builder().status(status);
-                let header_names = headers_obj.get_own_property_names(&mut cx)?;
-                let header_names_vec = header_names.to_vec(&mut cx)?;
-                
-                for js_name in header_names_vec {
-                    if let Ok(name_str) = js_name.downcast::<JsString, _>(&mut cx) {
-                        let name = name_str.value(&mut cx);
-                        if let Ok(js_value) = headers_obj.get::<JsValue, _, _>(&mut cx, name.as_str()) {
-                            if let Ok(value_str) = js_value.downcast::<JsString, _>(&mut cx) {
-                                let value = value_str.value(&mut cx);
-                                response_builder = response_builder.header(name, value);
-                            }
-                        }
-                    }
-                }
-                
-                let body_val = response_obj.get::<JsValue, _, _>(&mut cx, "body")?;
-                let body = get_buffer_data(&mut cx, body_val)?;
-                
-                response_builder.body(Body::from(body)).unwrap()
-            } else {
-                Response::builder()
-                    .status(200)
-                    .body(Body::from("OK"))
-                    .unwrap()
-            };
-            
-            let _ = tx.send(response);
-            Ok(())
-        });
-        
-        Ok(rx.recv().unwrap_or_else(|_| {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Handler error"))
-                .unwrap()
-        }))
-    } else {
-        Ok(Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .body(Body::from("No HTTP handler registered"))
-            .unwrap())
-    }
-}
-
-async fn handle_websocket(upgraded: Upgraded) {
-    let ws_stream = match accept_async(upgraded).await {
+async fn handle_connection(stream: TcpStream) {
+    let ws_stream = match accept_async(stream).await {
         Ok(ws_stream) => ws_stream,
         Err(e) => {
             eprintln!("WebSocket connection failed: {}", e);
