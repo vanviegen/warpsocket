@@ -1,7 +1,16 @@
 const wsbroker = require('../index.node');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+import { IncomingMessage, ServerResponse } from 'http';
 
 // Create a worker for the multi-room chat server
 const chatWorker = {
+    handleOpen(socketId: number, ip: string, headers: Record<string, string>) {
+        console.log(`Socket ${socketId} opened from ${ip}`, headers);
+        return true; // Allow the connection
+    },
     handleMessage(data: string | Uint8Array, socketId: number, token?: Uint8Array) {
         try {
             const message = JSON.parse(Buffer.from(data).toString());
@@ -118,6 +127,49 @@ const chatWorker = {
 wsbroker.registerWorkerThread(chatWorker);
 
 // Start the server
-wsbroker.start({ bind: '0.0.0.0:3000' });
-console.log('WebSocket chat server started on ws://localhost:3000');
-console.log('Connect using a WebSocket client to test the multi-room chat functionality.');    
+wsbroker.start({ bind: '0.0.0.0:8080' });
+console.log('WebSocket server started on ws://localhost:8080');
+
+// Start HTTP server for static files
+const clientDir = path.join(__dirname, 'client');
+
+const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
+    let filePath = path.join(clientDir, req.url === '/' ? 'index.html' : req.url || '');
+    
+    // Prevent directory traversal
+    if (!filePath.startsWith(clientDir)) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+    }
+    
+    fs.readFile(filePath, (err: NodeJS.ErrnoException | null, data: Buffer) => {
+        if (err) {
+            if (err.code === 'ENOENT') {
+                res.writeHead(404);
+                res.end('Not found');
+            } else {
+                res.writeHead(500);
+                res.end('Server error');
+            }
+            return;
+        }
+        
+        // Set content type based on file extension
+        const ext = path.extname(filePath).toLowerCase();
+        const contentTypes: { [key: string]: string } = {
+            '.html': 'text/html',
+            '.js': 'application/javascript',
+            '.css': 'text/css',
+            '.json': 'application/json'
+        };
+        
+        const contentType = contentTypes[ext] || 'text/plain';
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(data);
+    });
+});
+
+server.listen(3000, '0.0.0.0', () => {
+    console.log('HTTP server started on http://localhost:3000');
+});    

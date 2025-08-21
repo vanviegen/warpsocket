@@ -32,6 +32,23 @@ import { registerWorkerThread, start, sendToChannel, subscribe } from 'wsbroker'
 
 // Create a worker to handle connections
 const worker = {
+  handleOpen(socketId, ip, headers) {
+    console.log(`New connection ${socketId} from ${ip}`);
+    
+    // Example: reject connections from a specific origin
+    if (headers.origin === 'https://blocked-site.com') {
+      console.log('Blocked connection from unauthorized origin');
+      return false; // Reject the connection
+    }
+    
+    // Log user agent if present
+    if (headers['user-agent']) {
+      console.log(`User-Agent: ${headers['user-agent']}`);
+    }
+    
+    return true; // Accept the connection
+  },
+
   handleMessage(data, socketId, token) {
     const message = Buffer.from(data).toString();
     console.log(`Message from ${socketId}: ${message}`);
@@ -186,6 +203,23 @@ Copies all subscribers from one channel to another channel.
 import { registerWorkerThread, start, sendToChannel, subscribe, unsubscribe } from 'wsbroker';
 
 const chatWorker = {
+  handleOpen(socketId, ip, headers) {
+    console.log(`New chat connection ${socketId} from ${ip}`);
+    
+    // Example: Block connections from specific user agents
+    if (headers['user-agent'] && headers['user-agent'].includes('BadBot')) {
+      console.log('Blocked bot connection');
+      return false;
+    }
+    
+    // Log origin for debugging
+    if (headers.origin) {
+      console.log(`Connection origin: ${headers.origin}`);
+    }
+    
+    return true; // Accept the connection
+  },
+
   handleMessage(data, socketId) {
     const message = JSON.parse(data.toString());
     
@@ -236,6 +270,19 @@ import { registerWorkerThread, start, send, setToken, subscribe } from 'wsbroker
 import jwt from 'jsonwebtoken';
 
 const apiWorker = {
+  handleOpen(socketId, ip, headers) {
+    console.log(`API connection ${socketId} from ${ip}`);
+    
+    // Example: Only allow connections from specific origins
+    const allowedOrigins = ['https://myapp.com', 'https://admin.myapp.com'];
+    if (headers.origin && !allowedOrigins.includes(headers.origin)) {
+      console.log(`Rejected connection from unauthorized origin: ${headers.origin}`);
+      return false;
+    }
+    
+    return true;
+  },
+
   handleMessage(data, socketId, currentToken) {
     const message = JSON.parse(data.toString());
     

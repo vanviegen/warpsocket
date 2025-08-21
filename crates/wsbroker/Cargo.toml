@@ -8,14 +8,13 @@ exclude = ["index.node"]
 [lib]
 crate-type = ["cdylib"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 neon = "1.1"
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = "0.20"
-hyper = { version = "0.14", features = ["full"] }
 dashmap = "5.0"
 futures-util = "0.3"
-parking_lot = "0.12"
 lazy_static = "1.4"
+http = "=0.2.12"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

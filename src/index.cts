@@ -22,6 +22,15 @@ declare module "./load.cjs" {
  */
 export interface WorkerInterface {
   /**
+   * Handles new WebSocket connections and can reject them. If not provided, all connections are accepted.
+   * @param socketId - The unique identifier of the WebSocket connection
+   * @param ip - The client's IP address
+   * @param headers - HTTP headers from the WebSocket handshake request
+   * @returns true to accept the connection, false to reject it
+   */
+  handleOpen?(socketId: number, ip: string, headers: Record<string, string>): boolean;
+
+  /**
    * Handles incoming WebSocket messages from clients.
    * @param data - The message data (Buffer for binary, string for text)
    * @param socketId - The unique identifier of the WebSocket connection
@@ -40,7 +49,9 @@ export interface WorkerInterface {
 // Export the native addon functions with proper TypeScript bindings
 
 /** 
- * Starts the WebSocket broker server on the specified bind address.
+ * Starts a WebSocket broker server on the specified bind address.
+ * Can be called multiple times to run servers on different addresses simultaneously.
+ * All servers share the same worker pool and global state (channels, tokens, etc.).
  * @param options - Configuration object containing the bind address
  */
 export const start = addon.start;
