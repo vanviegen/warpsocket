@@ -31,6 +31,8 @@ lazy_static! {
 static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Atomic counter for generating unique worker thread IDs
 static WORKER_COUNTER: AtomicU64 = AtomicU64::new(0);
+// Round-robin counter for worker selection
+static ROUND_ROBIN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct Worker {
@@ -88,10 +90,10 @@ fn send(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let arg1 = cx.argument::<JsValue>(1)?;
     let message = js_value_to_message(&mut cx, arg1)?;
     
-    if let Some(sender_ref) = SOCKET_SENDERS.get(&socket_id) {
+    if let Some(sender_mutex) = SOCKET_SENDERS.get(&socket_id) {
         RUNTIME.block_on(async move {
-            let mut guard = sender_ref.lock().await;
-            let _ = guard.send(message).await;
+            let mut sender = sender_mutex.lock().await;
+            sender.send(message).await.unwrap_or_else(|e| println!("Send failed: {}", e));
         });
     }
     
@@ -105,13 +107,15 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let message = js_value_to_message(&mut cx, arg1)?;
     
     if let Some(subscribers) = CHANNELS.get(&channel_name) {
+        // Copy subscribers and release our lock synchronously
         let subscriber_ids: Vec<u64> = subscribers.iter().copied().collect();
-        
+        drop(subscribers); // Just to be explicit
+
         RUNTIME.block_on(async move {
             for socket_id in subscriber_ids {
-                if let Some(sender_ref) = SOCKET_SENDERS.get(&socket_id) {
-                    let mut guard = sender_ref.lock().await;
-                    let _ = guard.send(message.clone()).await;
+                if let Some(sender_mutex) = SOCKET_SENDERS.get(&socket_id) {
+                    let mut sender = sender_mutex.lock().await;
+                    sender.send(message.clone()).await.unwrap_or_else(|e| println!("Send failed: {}", e));
                 }
             }
         });
@@ -262,8 +266,8 @@ async fn start_server(bind_addr: SocketAddr) {
 async fn handle_connection(stream: TcpStream) {
     let peer_addr = stream.peer_addr().ok();
     
-    // Select a worker for this connection
-    let worker_id = simple_rng() % WORKERS.len() as u64;
+    // Select a worker for this connection using round-robin
+    let worker_id = ROUND_ROBIN_COUNTER.fetch_add(1, Ordering::Relaxed) % WORKERS.len() as u64;
     
     // Generate socket ID early so we can use it in the handshake callback
     let socket_id = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -287,7 +291,7 @@ async fn handle_connection(stream: TcpStream) {
             let client_ip_clone = client_ip.clone();
             let headers_clone = headers_map.clone();
             
-            // Use a channel to get the result from the JS callback
+            // Use a blocking channel to get the result from the JS callback
             let (tx, rx) = std::sync::mpsc::channel();
             
             WORKERS.get(&worker_id).unwrap().channel.send(move |mut cx| {
@@ -398,13 +402,11 @@ async fn handle_connection(stream: TcpStream) {
     }
 }
 
-
 async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message) {
     let worker = WORKERS.get(&worker_id).unwrap();
     if let Some(handler) = &worker.message_handler {
         let handler = Arc::clone(handler);
-        let token = SOCKET_TOKENS.get(&socket_id)
-        .map(|entry| entry.clone());
+        let token = SOCKET_TOKENS.get(&socket_id).map(|entry| entry.clone());
         
         worker.channel.send(move |mut cx| {
             let callback = handler.to_inner(&mut cx);
@@ -449,15 +451,6 @@ fn cleanup_disconnected_connections() {
         // Atomically double check that the channel is still empty before removing
         CHANNELS.remove_if(&channel_name, |_key, value| value.is_empty());
     }
-}
-
-// Simple pseudo-random number generator state for worker selection
-fn simple_rng() -> u64 {
-    static RNG_STATE: AtomicU64 = AtomicU64::new(0x5DEECE66D);
-    let current = RNG_STATE.load(Ordering::Relaxed);
-    let next = current.wrapping_mul(0x5DEECE66D).wrapping_add(0xB);
-    RNG_STATE.store(next, Ordering::Relaxed);
-    next
 }
 
 #[neon::main]
