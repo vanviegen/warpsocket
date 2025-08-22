@@ -13,10 +13,16 @@ How does this work?
   - Attaching a token (meta information) to a connection.
 - JavaScript callbacks are load-balanced across multiple JavaScript worker threads.
 
-So what WSBroker buys you compared to the standard Node.js WebSocket library (`ws`):
+So what WSBroker buys you compared to the standard Node.js WebSocket library (`ws`) is:
 - More performant and memory efficient connection handling.
 - Multi-threading, while still allowing you to efficiently send/broadcast to any WebSocket connection.
 - A ready-made channel system for broadcasting messages to multiple subscribers.
+
+Compared to [PushPin](https://github.com/fastly/pushpin), WSBroker is:
+- Only usable in a Node.js (or Bun) application.
+- More lightweight and easier to deploy: just an npm install, no need to run a separate server process.
+- Able to spawn JavaScript worker threads and pin connections to them.
+- Very fast!
 
 ## Quick Start
 
@@ -31,11 +37,8 @@ npm install wsbroker
 ```typescript
 import { start, sendToChannel, subscribe } from 'wsbroker';
 
-// Start the server and point to your worker module
+// Start the server and point it at your worker module (defaults to one worker thread per CPU core)
 start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js' });
-
-// Or specify a thread count (defaults to CPU cores, with a minimum of 4)
-start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js', threads: 8 });
 ```
 
 Create `my-worker.js` exporting any of the optional handlers:
@@ -313,6 +316,14 @@ Initiate a full build and publication of a new patch release of this library via
 #### `npm run dryrun`
 
 Initiate a dry run of a patch release of this library via GitHub Actions. This performs a full build but does not publish the final result.
+
+### End-to-end tests
+
+The test suite consists of end-to-end tests that start a real server instance and connect to it using Node.js WebSocket clients. The tests are located in the `test/e2e/` directory and can be run with:
+
+```sh
+npm run test
+```
 
 ### Development Workflow
 

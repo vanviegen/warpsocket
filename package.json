@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
-    "test": "tsc &&cargo test",
+    "test": "npm run build && npm run debug && node --test --test-concurrency=1 test/e2e/*.test.js",
     "cargo-build": "tsc &&cargo build --message-format=json-render-diagnostics > cargo.log",
     "cross-build": "tsc &&cross build --message-format=json-render-diagnostics > cross.log",
     "postcargo-build": "neon dist < cargo.log",
@@ -53,7 +53,9 @@
     "@types/node": "^20.11.16",
     "readme-tsdoc": "^1.1.4",
     "sirv": "^3.0.1",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "ws": "^8.18.0",
+    "portfinder": "^1.0.32"
   },
   "neon": {
     "type": "library",
