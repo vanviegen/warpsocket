@@ -6,16 +6,17 @@ How does this work?
 
 - WebSocket connections are accepted and managed by WSBroker's multi-threaded Rust code.
 - Incoming WebSocket messages (and other events) are handed off to JavaScript callback methods, allowing you to write application logic.
-- Your application logic can call WBroker functions for:
+- Your application logic can call WSBroker functions for:
   - Sending messages to specific WebSocket connections.
   - Subscribing connections to named channels.
+  - Broadcasting messages to these named channels.
   - Attaching a token (meta information) to a connection.
-  - Broadcasting to these named channels.
-- JavaScript callbacks can be load-balanced across multiple worker threads.
+- JavaScript callbacks are load-balanced across multiple JavaScript worker threads.
 
 So what WSBroker buys you compared to the standard Node.js WebSocket library (`ws`):
 - More performant and memory efficient connection handling.
 - Multi-threading, while still allowing you to efficiently send/broadcast to any WebSocket connection.
+- A ready-made channel system for broadcasting messages to multiple subscribers.
 
 ## Quick Start
 
@@ -28,75 +29,105 @@ npm install wsbroker
 ### Basic Usage
 
 ```typescript
-import { registerWorkerThread, start, sendToChannel, subscribe } from 'wsbroker';
+import { start, sendToChannel, subscribe } from 'wsbroker';
 
-// Create a worker to handle connections
-const worker = {
-  handleOpen(socketId, ip, headers) {
-    console.log(`New connection ${socketId} from ${ip}`);
-    
-    // Example: reject connections from a specific origin
-    if (headers.origin === 'https://blocked-site.com') {
-      console.log('Blocked connection from unauthorized origin');
-      return false; // Reject the connection
-    }
-    
-    // Log user agent if present
-    if (headers['user-agent']) {
-      console.log(`User-Agent: ${headers['user-agent']}`);
-    }
-    
-    return true; // Accept the connection
-  },
+// Start the server and point to your worker module
+start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js' });
 
-  handleMessage(data, socketId, token) {
-    const message = Buffer.from(data).toString();
-    console.log(`Message from ${socketId}: ${message}`);
-    
-    // Subscribe to a channel
-    subscribe(socketId, 'general');
-    
-    // Broadcast to all subscribers
-    sendToChannel('general', `User ${socketId} says: ${message}`);
-  },
-
-  handleClose(socketId, token) {
-    console.log(`Connection ${socketId} closed`);
-  }
-};
-
-// Register the worker and start the server
-registerWorkerThread(worker);
-start({ bind: '0.0.0.0:3000' });
+// Or specify a thread count (defaults to CPU cores, with a minimum of 4)
+start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js', threads: 8 });
 ```
 
-### Building WSBroker
+Create `my-worker.js` exporting any of the optional handlers:
 
-Building WSBroker requires a [supported version of Node and Rust](https://github.com/neon-bindings/neon#platform-support).
+```js
+export function handleOpen(socketId, ip, headers) {
+  console.log(`New connection ${socketId} from ip=${ip} origin=${headers.origin}`);
+  return true; // accept
+}
 
-To build from source:
+export async function handleTextMessage(text, socketId, token) {
+  subscribe(socketId, 'general');
+  sendToChannel('general', `User ${socketId}: ${text}`);
+}
 
-```sh
-npm install
-npm run build
+export async function handleTextMessage(data, socketId, token) {
+  console.error('Binary message received, but not handled');
+}
+
+export function handleClose(socketId, token) {
+  console.log('Closed', socketId);
+}
 ```
 
 ## API Reference
 
-WSBroker provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, manage worker threads, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
+WSBroker provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
 
 The following is auto-generated from `src/index.cts`:
+
+### start · function
+
+Starts a WebSocket broker server bound to the given address and (optionally)
+spawns worker threads that receive and handle WebSocket events.
+
+Notes:
+- Multiple servers can be started concurrently on different addresses.
+  Servers share global broker state (channels, tokens, subscriptions, etc.)
+  and the same worker pool.
+- Calling `start` without `workerPath` requires that at least one worker
+  has been registered previously via `registerWorkerThread`.
+
+**Signature:** `(options: { bind: string; workerPath?: string; threads?: number; }) => Promise<void>`
+
+**Parameters:**
+
+- `options: { bind: string, workerPath?: string, threads?: number }` - - Configuration object:
+- bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080").
+- workerPath: Optional. Path (absolute or relative to process.cwd()) to the
+ worker JavaScript module to load in threads. If provided,
+ the module will be imported in each worker thread and any
+ exported handlers will be registered with the native addon.
+ Worker modules may export any subset of the `WorkerInterface`
+ handlers. If `threads` is 0, the module will be registered
+ on the main thread and no worker threads will be spawned.
+- threads: Optional. Number of worker threads to spawn. When 0 the
+worker module is registered on the main thread. When a positive
+integer is provided, that number of Node.js `Worker` threads
+are created and set up to handle WebSocket events. When omitted,
+defaults to the number of CPU cores or 4, whichever is higher.
+
+**Returns:** A Promise that resolves after worker threads (if any) have been
+started and the native addon has been instructed to bind to the
+address. The Promise rejects if worker initialization fails.
+
+**Throws:**
+
+- If `options` is missing or `options.bind` is not a string.
 
 ### WorkerInterface · interface
 
 Interface that worker threads must implement to handle WebSocket events.
 All handler methods are optional - if not provided, the respective functionality will be unavailable.
 
-#### workerInterface.handleMessage · member
+#### workerInterface.handleOpen · member
 
-Handles incoming WebSocket messages from clients.
+Handles new WebSocket connections and can reject them, by returning `false` or throwing an Error.
+If not provided, all connections are accepted.
 
-**Type:** `(data: string | Uint8Array<ArrayBufferLike>, socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
+**Type:** `(socketId: number, ip: string, headers: Record<string, string>) => boolean`
+
+#### workerInterface.handleTextMessage · member
+
+Handles incoming WebSocket text messages from clients.
+
+**Type:** `(data: string, socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
+
+#### workerInterface.handleBinaryMessage · member
+
+Handles incoming WebSocket binary messages from clients.
+
+**Type:** `(data: Uint8Array<ArrayBufferLike>, socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
 
 #### workerInterface.handleClose · member
 
@@ -104,20 +135,10 @@ Handles WebSocket connection closures.
 
 **Type:** `(socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
 
-### start · function
-
-Starts the WebSocket broker server on the specified bind address.
-
-**Signature:** `(options: { bind: string; }) => void`
-
-**Parameters:**
-
-- `options` - - Configuration object containing the bind address
-
 ### registerWorkerThread · function
 
-Registers a worker thread with the broker to handle WebSocket messages.
-At least one worker must be registered before starting the server.
+Manually registers a worker thread with the broker to handle WebSocket messages.
+This function is normally not needed, as worker threads can be automatically registered by calling `start` with a `workerPath`.
 
 **Signature:** `(worker: WorkerInterface) => void`
 
@@ -175,7 +196,7 @@ Unsubscribes a WebSocket connection from a channel.
 
 ### setToken · function
 
-Associates an authentication token with a WebSocket connection.
+Associates an (authentication) token with a WebSocket connection. It will be passed along with all subsequent events for that connection.
 
 **Signature:** `(socketId: number, token: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => void`
 
@@ -200,137 +221,64 @@ Copies all subscribers from one channel to another channel.
 ### Chat Server
 
 ```typescript
-import { registerWorkerThread, start, sendToChannel, subscribe, unsubscribe } from 'wsbroker';
+import { start, sendToChannel, subscribe, unsubscribe } from 'wsbroker';
 
-const chatWorker = {
-  handleOpen(socketId, ip, headers) {
-    console.log(`New chat connection ${socketId} from ${ip}`);
-    
-    // Example: Block connections from specific user agents
-    if (headers['user-agent'] && headers['user-agent'].includes('BadBot')) {
-      console.log('Blocked bot connection');
-      return false;
-    }
-    
-    // Log origin for debugging
-    if (headers.origin) {
-      console.log(`Connection origin: ${headers.origin}`);
-    }
-    
-    return true; // Accept the connection
-  },
+start({ bind: '0.0.0.0:3000', workerPath: './chat-worker.js' });
+```
 
-  handleMessage(data, socketId) {
-    const message = JSON.parse(data.toString());
-    
-    switch (message.type) {
-      case 'join':
-        subscribe(socketId, message.room);
-        sendToChannel(message.room, JSON.stringify({
-          type: 'user-joined',
-          userId: socketId,
-          room: message.room
-        }));
-        break;
-        
-      case 'leave':
-        unsubscribe(socketId, message.room);
-        sendToChannel(message.room, JSON.stringify({
-          type: 'user-left',
-          userId: socketId,
-          room: message.room
-        }));
-        break;
-        
-      case 'message':
-        sendToChannel(message.room, JSON.stringify({
-          type: 'chat-message',
-          userId: socketId,
-          text: message.text,
-          timestamp: Date.now()
-        }));
-        break;
-    }
-  },
-  
-  handleClose(socketId) {
-    // Auto-cleanup: WSBroker automatically removes closed connections from channels
-    console.log(`User ${socketId} disconnected`);
+`chat-worker.js`:
+
+```js
+export function handleTextMessage(data, socketId) {
+  const message = JSON.parse(data);
+  switch (message.type) {
+    case 'join':
+      subscribe(socketId, message.room);
+      sendToChannel(message.room, JSON.stringify({ type: 'user-joined', userId: socketId, room: message.room }));
+      break;
+    case 'leave':
+      unsubscribe(socketId, message.room);
+      sendToChannel(message.room, JSON.stringify({ type: 'user-left', userId: socketId, room: message.room }));
+      break;
+    case 'message':
+      sendToChannel(message.room, JSON.stringify({ type: 'chat-message', userId: socketId, text: message.text, timestamp: Date.now() }));
+      break;
   }
 };
-
-registerWorkerThread(chatWorker);
-start({ bind: '0.0.0.0:3000' });
 ```
 
 ### WebSocket Authentication Example
 
 ```typescript
-import { registerWorkerThread, start, send, setToken, subscribe } from 'wsbroker';
+import { start, send, setToken, subscribe } from 'wsbroker';
 import jwt from 'jsonwebtoken';
 
-const apiWorker = {
-  handleOpen(socketId, ip, headers) {
-    console.log(`API connection ${socketId} from ${ip}`);
-    
-    // Example: Only allow connections from specific origins
-    const allowedOrigins = ['https://myapp.com', 'https://admin.myapp.com'];
-    if (headers.origin && !allowedOrigins.includes(headers.origin)) {
-      console.log(`Rejected connection from unauthorized origin: ${headers.origin}`);
-      return false;
-    }
-    
-    return true;
-  },
-
-  handleMessage(data, socketId, currentToken) {
-    const message = JSON.parse(data.toString());
-    
-    if (message.type === 'authenticate') {
-      try {
-        const decoded = jwt.verify(message.token, 'secret');
-        setToken(socketId, message.token);
-        
-        // Subscribe to user-specific channel
-        subscribe(socketId, `user:${decoded.userId}`);
-        
-        send(socketId, JSON.stringify({ type: 'authenticated', userId: decoded.userId }));
-      } catch (error) {
-        send(socketId, JSON.stringify({ type: 'auth-error', message: 'Invalid token' }));
-      }
-    } else if (currentToken) {
-      // Handle authenticated user messages
-      const decoded = jwt.verify(currentToken.toString(), 'secret');
-      // Process message from authenticated user...
-    } else {
-      send(socketId, JSON.stringify({ type: 'error', message: 'Authentication required' }));
-    }
-  }
-};
-
-registerWorkerThread(apiWorker);
-start({ bind: '0.0.0.0:3000' });
+start({ bind: '0.0.0.0:3000', workerPath: './api-worker.js' });
 ```
 
-## How It Works
+`api-worker.js`:
 
-WSBroker uses a multi-layered architecture:
-
-1. **Rust Core**: The core broker logic is implemented in Rust for maximum performance, handling WebSocket connections, channel management, and message routing.
-
-2. **Worker Threads**: JavaScript worker threads handle application logic, allowing you to write business logic in familiar Node.js while benefiting from Rust's performance for the networking layer.
-
-3. **Channel System**: Connections can subscribe to named channels (string or binary). Messages sent to a channel are automatically broadcasted to all subscribers.
-
-4. **Connection Management**: Each WebSocket connection gets a unique ID and can be associated with authentication tokens for secure operations.
-
-### Performance Characteristics
-
-- **Message Routing**: Sub-millisecond routing between connected clients
-- **Memory Usage**: Minimal overhead per connection (~1KB per WebSocket)
-- **Concurrent Connections**: Scales to thousands of simultaneous connections
-- **Channel Efficiency**: O(1) channel subscription/unsubscription operations
-- **Worker Load Balancing**: Automatic distribution of connections across worker threads
+```js
+export function handleTextMessage(data, socketId, currentToken) {
+  const message = JSON.parse(data);
+  if (message.type === 'authenticate') {
+    try {
+      const decoded = jwt.verify(message.token, 'secret');
+      setToken(socketId, JSON.stringify(message.token));
+      subscribe(socketId, `user:${decoded.userId}`);
+      send(socketId, JSON.stringify({ type: 'authenticated', userId: decoded.userId }));
+    } catch (error) {
+      send(socketId, JSON.stringify({ type: 'auth-error', body: 'Invalid token' }));
+    }
+    return;
+  }
+  if (!currentToken) {
+    send(socketId, JSON.stringify({ type: 'auth-required', body: 'Please authenticate first' }));
+    return;
+  }
+  const decoded = JSON.parse(currentToken);
+};
+```
 
 ## Development
 
@@ -368,35 +316,24 @@ Initiate a dry run of a patch release of this library via GitHub Actions. This p
 
 ### Development Workflow
 
-1. **Make changes** to the Rust code in `crates/ws-broker/src/lib.rs` or TypeScript code in `src/`
+1. **Make changes** to the Rust code in `crates/wsbroker/src/lib.rs` or TypeScript code in `src/`
 2. **Build the project** with `npm run debug` for development or `npm run build` for production
-3. **Update documentation** with `npm run docs` if you've changed TypeScript interfaces or JSDoc comments
-4. **Test your changes** using the examples in the `example/` directory
-5. **Run tests** with `npm test` to ensure everything works correctly
-
-### Updating Documentation
-
-The API Reference section is automatically generated from TypeScript source files using JSDoc comments. To update the documentation:
-
-```sh
-npm run docs
-```
-
-This will scan the TypeScript files and update the README.md with the latest API documentation. The documentation is automatically updated before publishing via the `prepublishOnly` script.
+3. **Test your changes** using the examples in the `example/` directory
+4. **Run tests** with `npm test` to ensure everything works correctly
+5. **Update reference docs** in README.md using `npm run docs` if you've changed TypeScript interfaces or JSDoc comments
 
 ### Testing the Examples
 
 The project includes example code to help you get started:
 
 ```sh
-# Build the project
-npm run build
+# Build and run the example server
+npm run build && node lib/example/example.ts
 
-# Run the example server
-node example/example.ts
+# Or without compilation step (if using bun or a very recent Node.js)
+bun example/example.ts
 
-# In another terminal, test the WebSocket connection
-node example/test-client.js
+# Point your browser at http://localhost:3000
 ```
 
 ### Debugging
@@ -418,55 +355,30 @@ The directory structure of this project is:
 wsbroker/
 ├── Cargo.toml
 ├── README.md
-├── lib/                    # Generated TypeScript output
-├── src/                    # TypeScript source files
-|   ├── index.mts          # ESM entry point
-|   ├── index.cts          # CommonJS entry point
-|   └── load.cts           # Platform-specific loader
+├── lib/                   # Generated TypeScript output
+├── src/                   # TypeScript source files
+|   ├── index.cts          # CommonJS entry point (includes Worker spawning logic)
+|   ├── index.mts          # ESM entry point (just loads the CJS entry point)
+|   └── load.cts           # Loader for platform-specific binaries
 ├── crates/                # Rust source code
-|   └── ws-broker/
+|   └── wsbroker/
 |       └── src/
 |           └── lib.rs     # Main Rust implementation
 ├── example/               # Example applications
-|   ├── example.ts         # Server example
-|   └── test-client.js     # WebSocket client test
+|   ├── example.ts         # Server example (sets up WSBroker and static HTTP)
+|   ├── worker.ts          # Event-handling logic for the example, ran in worker threads
+|   └── client/            # Client-side code for the example
 ├── platforms/             # Platform-specific binaries
 ├── package.json
-└── target/               # Rust build artifacts
+└── target/                # Rust build artifacts
 ```
-
-| Entry          | Purpose                                                                                                                                  |
-|----------------|------------------------------------------------------------------------------------------------------------------------------------------|
-| `Cargo.toml`   | The Cargo [manifest file](https://doc.rust-lang.org/cargo/reference/manifest.html), which informs the `cargo` command.                   |
-| `README.md`    | This file.                                                                                                                               |
-| `lib/`         | The directory containing the generated output from [tsc](https://typescriptlang.org).                                                    |
-| `src/`         | The directory containing the TypeScript source files.                                                                                    |
-| `index.mts`    | Entry point for when this library is loaded via [ESM `import`](https://nodejs.org/api/esm.html#modules-ecmascript-modules) syntax.       |
-| `index.cts`    | Entry point for when this library is loaded via [CJS `require`](https://nodejs.org/api/modules.html#requireid).                          |
-| `load.cts`     | Platform-specific binary loader using [@neon-rs/load](https://www.npmjs.com/package/@neon-rs/load).                                      |
-| `crates/`      | The directory tree containing the Rust source code for the project.                                                                      |
-| `lib.rs`       | Entry point for the Rust source code - contains the core broker implementation.                                                          |
-| `example/`     | Example applications demonstrating WSBroker usage.                                                                                       |
-| `platforms/`   | The directory containing distributions of the binary addon backend for each platform supported by this library.                          |
-| `package.json` | The npm [manifest file](https://docs.npmjs.com/cli/v7/configuring-npm/package-json), which informs the `npm` command.                    |
-| `target/`      | Binary artifacts generated by the Rust build.                                                                                            |
 
 ## Requirements
 
-- **Node.js**: Version 18 or higher
-- **Rust**: Latest stable version (for building from source)
+- **Node.js**: Version 18 or higher (or Bun)
+- **Rust**: Tested on version 1.89 (for building from source)
 - **Platform Support**: Windows, macOS (Intel/ARM), Linux (x64/ARM64)
 
 ## License
 
-MIT
-
-## Learn More
-
-Learn more about the technologies used in WSBroker:
-
-- [Neon](https://neon-bindings.com) - Rust bindings for writing safe and fast native Node.js modules
-- [Rust](https://www.rust-lang.org) - Systems programming language focused on safety and performance
-- [Node.js](https://nodejs.org) - JavaScript runtime built on Chrome's V8 JavaScript engine
-- [WebSockets](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API) - Protocol for full-duplex communication over TCP
-- [Tokio](https://tokio.rs) - Asynchronous runtime for Rust
+ISC - see `LICENSE.txt` file for details.

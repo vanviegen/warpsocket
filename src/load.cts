@@ -13,5 +13,6 @@ module.exports = require('@neon-rs/load').proxy({
     'linux-x64-gnu': () => require('@wsbroker/linux-x64-gnu'),
     'linux-arm64-gnu': () => require('@wsbroker/linux-arm64-gnu')
   },
-  debug: () => require('../index.node')
+  debug: () => require('wsbroker/native-debug')
 });
+

@@ -37,45 +37,67 @@ static ROUND_ROBIN_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone)]
 struct Worker {
     channel: Channel,
-    message_handler: Option<Arc<Root<JsFunction>>>,
+    text_message_handler: Option<Arc<Root<JsFunction>>>,
+    binary_message_handler: Option<Arc<Root<JsFunction>>>,
     close_handler: Option<Arc<Root<JsFunction>>>,
     open_handler: Option<Arc<Root<JsFunction>>>,
 }
 
+fn read_arg<'a, T>(cx: &mut FunctionContext<'a>, index: usize) -> NeonResult<Handle<'a, T>>
+where T: neon::prelude::Value + 'static,
+{
+    match cx.argument_opt(index) {
+        Some(val) => match val.downcast::<T, _>(cx) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                let type_name = std::any::type_name::<T>().rsplit("::").next().unwrap_or("value").trim_start_matches("Js").to_string();
+                cx.throw_type_error(&format!("Expected argument {} to be a {}", index + 1, type_name))
+            }
+        },
+        None => cx.throw_type_error(&format!("Missing argument {}", index + 1)),
+    }
+}
+
 fn start(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let opts = cx.argument::<JsObject>(0)?;
-    let bind_str = opts.get::<JsString, _, _>(&mut cx, "bind")?.value(&mut cx);
-    
-    let bind_addr: SocketAddr = bind_str.parse()
-    .or_else(|_| cx.throw_error("Invalid bind address"))?;
-    
+    let bind_str = read_arg::<JsString>(&mut cx, 0)?.value(&mut cx);
+
+    let bind_addr = match bind_str.parse::<SocketAddr>() {
+        Ok(addr) => addr,
+        Err(_) => return cx.throw_error("Invalid bind address"),
+    };
+
     // Check that at least one worker is registered
     if WORKERS.is_empty() {
         return cx.throw_error("At least one worker must be registered before starting the server");
     }
     
-    // Use the global runtime to spawn the server
+    // Try to bind synchronously so we can report errors back to JS
+    let listener = match RUNTIME.block_on(async { TcpListener::bind(&bind_addr).await }) {
+        Ok(listener) => listener,
+        Err(e) => return cx.throw_error(format!("Failed to bind to {}: {}", bind_addr, e)),
+    };
+    
+    // Use the global runtime to spawn the server with the bound listener
     RUNTIME.spawn(async move {
-        start_server(bind_addr).await;
+        start_server(listener).await;
     });
     
     Ok(cx.undefined())
 }
 
 fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let worker_obj = cx.argument::<JsObject>(0)?;
+    let worker_obj = read_arg::<JsObject>(&mut cx, 0)?;
     
-    let message_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleMessage")?
-    .map(|f| Arc::new(f.root(&mut cx)));
-    let close_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleClose")?
-    .map(|f| Arc::new(f.root(&mut cx)));
-    let open_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleOpen")?
-    .map(|f| Arc::new(f.root(&mut cx)));
+    let text_message_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleTextMessage")?.map(|f| Arc::new(f.root(&mut cx)));
+    let binary_message_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleBinaryMessage")?.map(|f| Arc::new(f.root(&mut cx)));
+    let close_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleClose")?.map(|f| Arc::new(f.root(&mut cx)));
+    let open_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleOpen")?.map(|f| Arc::new(f.root(&mut cx)));
     
     let worker_id = WORKER_COUNTER.fetch_add(1, Ordering::Relaxed);
     let worker = Worker {
         channel: cx.channel(),
-        message_handler,
+        text_message_handler,
+        binary_message_handler,
         close_handler,
         open_handler,
     };
@@ -86,8 +108,8 @@ fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 fn send(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
-    let arg1 = cx.argument::<JsValue>(1)?;
+    let socket_id = read_arg::<JsNumber>(&mut cx, 0)?.value(&mut cx) as u64;
+    let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let message = js_value_to_message(&mut cx, arg1)?;
     
     if let Some(sender_mutex) = SOCKET_SENDERS.get(&socket_id) {
@@ -101,9 +123,9 @@ fn send(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let arg0 = cx.argument::<JsValue>(0)?;
+    let arg0 = read_arg::<JsValue>(&mut cx, 0)?;
     let channel_name = js_value_to_bytes(&mut cx, arg0)?;
-    let arg1 = cx.argument::<JsValue>(1)?;
+    let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let message = js_value_to_message(&mut cx, arg1)?;
     
     if let Some(subscribers) = CHANNELS.get(&channel_name) {
@@ -125,8 +147,8 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 fn subscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
-    let arg1 = cx.argument::<JsValue>(1)?;
+    let socket_id = read_arg::<JsNumber>(&mut cx, 0)?.value(&mut cx) as u64;
+    let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let channel_name = js_value_to_bytes(&mut cx, arg1)?;
     
     let was_inserted = CHANNELS.entry(channel_name).or_insert_with(HashSet::new).insert(socket_id);
@@ -135,8 +157,8 @@ fn subscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 }
 
 fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
-    let arg1 = cx.argument::<JsValue>(1)?;
+    let socket_id = read_arg::<JsNumber>(&mut cx, 0)?.value(&mut cx) as u64;
+    let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let channel_name = js_value_to_bytes(&mut cx, arg1)?;
     
     let was_removed = if let Some(mut channel) = CHANNELS.get_mut(&channel_name) {
@@ -149,8 +171,8 @@ fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 }
 
 fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let socket_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as u64;
-    let arg1 = cx.argument::<JsValue>(1)?;
+    let socket_id = read_arg::<JsNumber>(&mut cx, 0)?.value(&mut cx) as u64;
+    let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let token = js_value_to_bytes(&mut cx, arg1)?;
     
     SOCKET_TOKENS.insert(socket_id, token);
@@ -159,9 +181,9 @@ fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 }
 
 fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let arg0 = cx.argument::<JsValue>(0)?;
+    let arg0 = read_arg::<JsValue>(&mut cx, 0)?;
     let from_channel = js_value_to_bytes(&mut cx, arg0)?;
-    let arg1 = cx.argument::<JsValue>(1)?;
+    let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let to_channel = js_value_to_bytes(&mut cx, arg1)?;
     
     // Create a local copy of subscribers to avoid holding read lock on from_channel
@@ -240,7 +262,7 @@ fn create_js_buffer<'a, C: Context<'a>>(cx: &mut C, data: &[u8]) -> NeonResult<H
     Ok(js_buf)
 }
 
-async fn start_server(bind_addr: SocketAddr) {
+async fn start_server(listener: TcpListener) {
     // Cleanup task
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(10));
@@ -249,14 +271,6 @@ async fn start_server(bind_addr: SocketAddr) {
             cleanup_disconnected_connections();
         }
     });
-    
-    let listener = match TcpListener::bind(&bind_addr).await {
-        Ok(listener) => listener,
-        Err(e) => {
-            eprintln!("Failed to bind to {}: {}", bind_addr, e);
-            return;
-        }
-    };
     
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(handle_connection(stream));
@@ -404,7 +418,14 @@ async fn handle_connection(stream: TcpStream) {
 
 async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message) {
     let worker = WORKERS.get(&worker_id).unwrap();
-    if let Some(handler) = &worker.message_handler {
+
+    let opt_handler = match message {
+        Message::Text(_) => &worker.text_message_handler,
+        Message::Binary(_) => &worker.binary_message_handler,
+        _ => &None
+    };
+
+    if let Some(handler) = opt_handler {
         let handler = Arc::clone(handler);
         let token = SOCKET_TOKENS.get(&socket_id).map(|entry| entry.clone());
         

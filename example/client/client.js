@@ -1,3 +1,10 @@
+/*
+ * Example WebSocket Chat Client
+ * 
+ * NOTE: This code has been vibe-coded in a single shot. Don't take this as a good example of how
+ * to build a user interface. The WebSocket handling, which is the point here, looks good though!
+ */
+
 class ChatClient {
     constructor() {
         this.ws = null;
@@ -142,9 +149,9 @@ class ChatClient {
 
     sendMessage() {
         const messageInput = document.getElementById('message-input');
-        const message = messageInput.value.trim();
+        const body = messageInput.value.trim();
         
-        if (!message) {
+        if (!body) {
             return;
         }
 
@@ -161,7 +168,7 @@ class ChatClient {
         // Send message
         this.sendWebSocketMessage({
             type: 'message',
-            message: message
+            body: body
         });
 
         // Clear input
@@ -193,7 +200,7 @@ class ChatClient {
                 this.addUserLeftMessage(message);
                 break;
             case 'error':
-                this.addErrorMessage(message.message);
+                this.addErrorMessage(message.body);
                 break;
             default:
                 console.log('Unknown message type:', message.type);
@@ -235,7 +242,7 @@ class ChatClient {
         
         const content = document.createElement('div');
         content.className = 'message-content';
-        content.textContent = message.message;
+        content.textContent = message.body;
         
         messageElement.appendChild(header);
         messageElement.appendChild(content);
