@@ -32,6 +32,11 @@ Compared to [PushPin](https://github.com/fastly/pushpin), WSBroker is:
 npm install wsbroker
 ```
 
+Requirements:
+
+- **Node.js**: Version 18 or higher (or Bun).
+- **Rust**: A recent Rust toolchain (rustc + cargo) is required to build the project unless you're on X64 Linux, for which a prebuilt binary is provided. The project has been tested with Rust 1.89.
+
 ### Basic Usage
 
 ```typescript
@@ -285,44 +290,18 @@ export function handleTextMessage(data, socketId, currentToken) {
 
 ## Development
 
-### Available Scripts
+### How to build
 
-#### `npm run build`
-
-Builds the Node addon (`index.node`) from source, generating a release build with `cargo --release`.
-
-Additional [`cargo build`](https://doc.rust-lang.org/cargo/commands/cargo-build.html) arguments may be passed to `npm run build` and similar commands. For example, to enable a [cargo feature](https://doc.rust-lang.org/cargo/reference/features.html):
-
-```
-npm run build -- --feature=beetle
-```
-
-#### `npm run debug`
-
-Similar to `npm run build` but generates a debug build with `cargo`.
-
-#### `npm run cross`
-
-Similar to `npm run build` but uses [cross-rs](https://github.com/cross-rs/cross) to cross-compile for another platform. Use the [`CARGO_BUILD_TARGET`](https://doc.rust-lang.org/cargo/reference/config.html#buildtarget) environment variable to select the build target.
-
-#### `npm test`
-
-Runs the unit tests by calling `cargo test`. You can learn more about [adding tests to your Rust code](https://doc.rust-lang.org/book/ch11-01-writing-tests.html) from the [Rust book](https://doc.rust-lang.org/book/).
-
-#### `npm run release`
-
-Initiate a full build and publication of a new patch release of this library via GitHub Actions.
-
-#### `npm run dryrun`
-
-Initiate a dry run of a patch release of this library via GitHub Actions. This performs a full build but does not publish the final result.
+- `npm run build`: Builds TypeScript files to JavaScript in `dist/` and builds the native addon (see below).
+- `npm run build:native`: Builds only the native addon. This creates `build/<platform>-<arch>.node` using your local Rust toolchain.
+- `npm run docs`: Updates the reference documentation section of README.md based on `src/index.cts`.
 
 ### End-to-end tests
 
 The test suite consists of end-to-end tests that start a real server instance and connect to it using Node.js WebSocket clients. The tests are located in the `test/e2e/` directory and can be run with:
 
 ```sh
-npm run test
+npm test
 ```
 
 ### Development Workflow
@@ -333,13 +312,13 @@ npm run test
 4. **Run tests** with `npm test` to ensure everything works correctly
 5. **Update reference docs** in README.md using `npm run docs` if you've changed TypeScript interfaces or JSDoc comments
 
-### Testing the Examples
+### Running the example
 
 The project includes example code to help you get started:
 
 ```sh
 # Build and run the example server
-npm run build && node lib/example/example.ts
+npm run build && node dist/example/example.ts
 
 # Or without compilation step (if using bun or a very recent Node.js)
 bun example/example.ts
@@ -366,11 +345,11 @@ The directory structure of this project is:
 wsbroker/
 ├── Cargo.toml
 ├── README.md
-├── lib/                   # Generated TypeScript output
+├── dist/                  # Generated TypeScript output
 ├── src/                   # TypeScript source files
 |   ├── index.cts          # CommonJS entry point (includes Worker spawning logic)
 |   ├── index.mts          # ESM entry point (just loads the CJS entry point)
-|   └── load.cts           # Loader for platform-specific binaries
+|   └── addon-loader.cts   # Loader for platform-specific binaries
 ├── crates/                # Rust source code
 |   └── wsbroker/
 |       └── src/
@@ -379,16 +358,11 @@ wsbroker/
 |   ├── example.ts         # Server example (sets up WSBroker and static HTTP)
 |   ├── worker.ts          # Event-handling logic for the example, ran in worker threads
 |   └── client/            # Client-side code for the example
-├── platforms/             # Platform-specific binaries
+├── build/                 # Path for native addon binaries
+├── build-addon.js         # Build script for the native addon
 ├── package.json
-└── target/                # Rust build artifacts
+└── target/                # Intermediate Rust build artifacts
 ```
-
-## Requirements
-
-- **Node.js**: Version 18 or higher (or Bun)
-- **Rust**: Tested on version 1.89 (for building from source)
-- **Platform Support**: Windows, macOS (Intel/ARM), Linux (x64/ARM64)
 
 ## License
 

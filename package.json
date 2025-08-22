@@ -3,20 +3,12 @@
   "version": "0.1.1",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
-    "test": "npm run build && npm run debug && node --test --test-concurrency=1 test/e2e/*.test.js",
-    "cargo-build": "tsc &&cargo build --message-format=json-render-diagnostics > cargo.log",
-    "cross-build": "tsc &&cross build --message-format=json-render-diagnostics > cross.log",
-    "postcargo-build": "neon dist < cargo.log",
-    "postcross-build": "neon dist -m /target < cross.log",
-    "debug": "npm run cargo-build --",
-    "build": "npm run cargo-build -- --release",
-    "cross": "npm run cross-build -- --release",
-    "prepack": "tsc &&neon update",
-    "version": "neon bump --binaries platforms && git add .",
-    "release": "gh workflow run release.yml -f dryrun=false -f version=patch",
-    "dryrun": "gh workflow run publish.yml -f dryrun=true",
+    "build": "tsc && npm run build:native",
+    "build:native": "node ./build-addon.js",
+    "test": "npm run build && node --test --test-concurrency=1 test/e2e/*.test.js",
     "docs": "readme-tsdoc",
-    "prepublishOnly": "npm run docs"
+    "postinstall": "node ./build-addon.js --postinstall",
+    "prepublishOnly": "node ./build-addon.js --prepublish"
   },
   "author": "Frank van Viegen",
   "license": "ISC",
@@ -25,30 +17,27 @@
     ".": {
       "import": {
         "bun": "./src/index.cts",
-        "types": "./lib/src/index.d.mts",
-        "default": "./lib/src/index.mjs"
+        "types": "./dist/src/index.d.mts",
+        "default": "./dist/src/index.mjs"
       },
       "require": {
-        "types": "./lib/src/index.d.cts",
-        "default": "./lib/src/index.cjs"
+        "types": "./dist/src/index.d.cts",
+        "default": "./dist/src/index.cjs"
       }
     },
-    "./native-loader": {
-      "bun": "./src/load.cts",
-      "types": "./lib/src/load.d.cts",
-      "default": "./lib/src/load.cjs"
-    },
-    "./native-debug": "./index.node"
+    "./addon-loader": {
+      "bun": "./src/addon-loader.cts",
+      "types": "./dist/src/addon-loader.d.cts",
+      "default": "./dist/src/addon-loader.cjs"
+    }
   },
   "files": [
     "src/**",
-    "lib/src/**"
+    "dist/src/**",
+    "build/linux-x64.node"
   ],
-  "dependencies": {
-    "@neon-rs/load": "^0.1.82"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@neon-rs/cli": "^0.1.82",
     "@tsconfig/node20": "^20.1.4",
     "@types/node": "^20.11.16",
     "readme-tsdoc": "^1.1.4",
@@ -56,11 +45,5 @@
     "typescript": "^5.3.3",
     "ws": "^8.18.0",
     "portfinder": "^1.0.32"
-  },
-  "neon": {
-    "type": "library",
-    "org": "@wsbroker",
-    "platforms": "common",
-    "load": "./src/load.cts"
   }
 }

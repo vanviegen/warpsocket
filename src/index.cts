@@ -1,12 +1,11 @@
 // This module is the CJS entry point for the library.
 
-// The Rust addon.
-import * as addon from 'wsbroker/native-loader';
+import * as addon from 'wsbroker/addon-loader';
 import { Worker } from 'node:worker_threads';
 import * as os from 'node:os';
-import * as path from 'node:path';
+import * as pathMod from 'node:path';
 
-declare module "wsbroker/native-loader" {
+declare module "wsbroker/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
     function send(socketId: number, data: Uint8Array | ArrayBuffer | string): void;
@@ -103,7 +102,7 @@ export async function start(options: { bind: string, workerPath?: string, thread
 
 const BOOTSTRAP_WORKER = `
 const { workerData: workerModulePath, parentPort } = require('node:worker_threads');
-const addon = require('wsbroker/native-loader');
+const addon = require('wsbroker/addon-loader');
 (async () => {
     const workerModule = await import(workerModulePath);
     addon.registerWorkerThread(workerModule);
@@ -146,8 +145,8 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
 }
 
 async function spawnWorkers(workerModulePath: string, threads?: number): Promise<void> {
-    if (!path.isAbsolute(workerModulePath)) {
-        workerModulePath = path.resolve(process.cwd(), workerModulePath);
+    if (!pathMod.isAbsolute(workerModulePath)) {
+        workerModulePath = pathMod.resolve(process.cwd(), workerModulePath);
     }
 
     const threadCount = threads == null ? Math.max(os.cpus()?.length || 1, 4) : threads;

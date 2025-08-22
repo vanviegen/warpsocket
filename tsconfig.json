@@ -4,7 +4,8 @@
     "rootDir": ".",
     "module": "node16",
     "declaration": true,
-    "outDir": "lib",
+    "outDir": "dist",
+    "allowJs": true
   },
-  "exclude": ["lib"]
+  "exclude": ["dist"]
 }
