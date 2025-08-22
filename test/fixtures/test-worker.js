@@ -1,4 +1,4 @@
-const { subscribe, sendToChannel, setToken, send } = require('wsbroker');
+const { subscribe, sendToChannel, setToken, send } = require('warpws');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {

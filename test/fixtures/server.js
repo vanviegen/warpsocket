@@ -1,4 +1,4 @@
-const { start } = require('wsbroker');
+const { start } = require('warpws');
 
 const port = process.env.PORT || '3010';
 const workerPath = process.env.WORKER_PATH;

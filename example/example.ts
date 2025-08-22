@@ -1,9 +1,9 @@
-import * as wsbroker from 'wsbroker';
+import * as warpws from 'warpws';
 import http from 'http';
 import path from 'path';
 import sirv from 'sirv';
 
-wsbroker.start({ bind: '0.0.0.0:8080', workerPath: path.join(__dirname, 'worker.js') });
+warpws.start({ bind: '0.0.0.0:8080', workerPath: path.join(__dirname, 'worker.js') });
 
 // Start HTTP server for static files
 const assets = sirv(path.join(__dirname, 'client'), {

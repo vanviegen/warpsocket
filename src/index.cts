@@ -1,11 +1,11 @@
 // This module is the CJS entry point for the library.
 
-import * as addon from 'wsbroker/addon-loader';
+import * as addon from 'warpws/addon-loader';
 import { Worker } from 'node:worker_threads';
 import * as os from 'node:os';
 import * as pathMod from 'node:path';
 
-declare module "wsbroker/addon-loader" {
+declare module "warpws/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
     function send(socketId: number, data: Uint8Array | ArrayBuffer | string): void;
@@ -58,12 +58,12 @@ export interface WorkerInterface {
 const workers: Worker[] = [];
 
 /** 
- * Starts a WebSocket broker server bound to the given address and (optionally)
+ * Starts a WebSocket server bound to the given address and (optionally)
  * spawns worker threads that receive and handle WebSocket events.
  *
  * Notes:
  * - Multiple servers can be started concurrently on different addresses.
- *   Servers share global broker state (channels, tokens, subscriptions, etc.)
+ *   Servers share global server state (channels, tokens, subscriptions, etc.)
  *   and the same worker pool.
  * - Calling `start` without `workerPath` requires that at least one worker
  *   has been registered previously via `registerWorkerThread`.
@@ -102,13 +102,13 @@ export async function start(options: { bind: string, workerPath?: string, thread
 
 const BOOTSTRAP_WORKER = `
 const { workerData: workerModulePath, parentPort } = require('node:worker_threads');
-const addon = require('wsbroker/addon-loader');
+const addon = require('warpws/addon-loader');
 (async () => {
     const workerModule = await import(workerModulePath);
     addon.registerWorkerThread(workerModule);
     parentPort.postMessage({ type: 'registered' });
 })().catch((err) => {
-    console.error('wsbroker: worker init failed:', err);
+    console.error('warpws: worker init failed:', err);
 });
 `;
 
@@ -128,11 +128,11 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
         });
 
         w.on('error', (err) => {
-            console.error('wsbroker: worker thread error:', err);
+            console.error('warpws: worker thread error:', err);
         });
 
         w.on('exit', (code) => {
-            console.error('wsbroker: worker thread exited with code', code);
+            console.error('warpws: worker thread exited with code', code);
             if (running) {
                 // Start a replacement worker
                 spawnWorker(workerModulePath, true);
@@ -165,7 +165,7 @@ async function spawnWorkers(workerModulePath: string, threads?: number): Promise
 }
 
 /** 
-* Manually registers a worker thread with the broker to handle WebSocket messages.
+* Manually registers a worker thread with the server to handle WebSocket messages.
 * This function is normally not needed, as worker threads can be automatically registered by calling `start` with a `workerPath`.
 * @param worker - Worker interface implementation with optional handlers.
 */

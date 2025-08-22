@@ -1,4 +1,4 @@
-import * as wsbroker from 'wsbroker';
+import * as warpws from 'warpws';
 
 const workerId = Math.random().toString(36).substring(2);
 console.log(`Worker thread ${workerId} started`);
@@ -11,9 +11,9 @@ export function handleOpen(socketId: number, ip: string, headers: Record<string,
 function send(socketOrChannel: number | string, message: any) {
     const data = JSON.stringify(message);
     if (typeof socketOrChannel === 'number') {
-        wsbroker.send(socketOrChannel, data);
+        warpws.send(socketOrChannel, data);
     } else {
-        wsbroker.sendToChannel(socketOrChannel, data);
+        warpws.sendToChannel(socketOrChannel, data);
     }
 }
 
@@ -21,7 +21,7 @@ const messageHandlers: Record<string, (data: any, socketId: number, userInfo: an
     join: function({ alias, room }: any, socketId: number, userInfo: any) {
         // If user was in another room, unsubscribe from it and notify
         if (userInfo && userInfo.room && userInfo.room !== room) {
-            wsbroker.unsubscribe(socketId, userInfo.room);
+            warpws.unsubscribe(socketId, userInfo.room);
             
             // Notify old room that user left
             send(userInfo.room, {
@@ -33,10 +33,10 @@ const messageHandlers: Record<string, (data: any, socketId: number, userInfo: an
         
         // We're storing the user state (alias and room) in the token here
         // For a real app, you'd probably want to store this in a database, and just store a user/client ID in the token
-        wsbroker.setToken(socketId, JSON.stringify({ alias, room }));
+        warpws.setToken(socketId, JSON.stringify({ alias, room }));
         
         // Subscribe to the new room
-        wsbroker.subscribe(socketId, room);
+        warpws.subscribe(socketId, room);
         
         // Notify user they joined successfully
         send(socketId, {
@@ -98,5 +98,5 @@ export function handleClose(socketId: number, token?: Uint8Array) {
         }
     }
     
-    // Note: WSBroker automatically handles unsubscribing closed connections from all channels
+    // Note: WarpWS automatically handles unsubscribing closed connections from all channels
 }

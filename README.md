@@ -1,27 +1,27 @@
-# WSBroker
+# WarpWS
 
 Node-API addon for writing high-performance multi-threaded WebSocket servers.
 
 How does this work?
 
-- WebSocket connections are accepted and managed by WSBroker's multi-threaded Rust code.
+- WebSocket connections are accepted and managed by WarpWS's multi-threaded Rust code.
 - Incoming WebSocket messages (and other events) are handed off to JavaScript callback methods, allowing you to write application logic.
-- Your application logic can call WSBroker functions for:
+- Your application logic can call WarpWS functions for:
   - Sending messages to specific WebSocket connections.
   - Subscribing connections to named channels.
   - Broadcasting messages to these named channels.
   - Attaching a token (meta information) to a connection.
 - JavaScript callbacks are load-balanced across multiple JavaScript worker threads.
 
-So what WSBroker buys you compared to the standard Node.js WebSocket library (`ws`) is:
+So what WarpWS buys you compared to the standard Node.js WebSocket library (`ws`) is:
 - More performant and memory efficient connection handling.
 - Multi-threading, while still allowing you to efficiently send/broadcast to any WebSocket connection.
 - A ready-made channel system for broadcasting messages to multiple subscribers.
 
-Compared to [PushPin](https://github.com/fastly/pushpin), WSBroker is:
+Compared to [PushPin](https://github.com/fastly/pushpin), WarpWS is:
 - Only usable in a Node.js (or Bun) application.
 - More lightweight and easier to deploy: just an npm install, no need to run a separate server process.
-- Able to spawn JavaScript worker threads and pin connections to them.
+- Capable of running your business logic in parallel JavaScript threads.
 - Very fast!
 
 ## Quick Start
@@ -29,18 +29,18 @@ Compared to [PushPin](https://github.com/fastly/pushpin), WSBroker is:
 ### Installation
 
 ```sh
-npm install wsbroker
+npm install warpws
 ```
 
 Requirements:
 
 - **Node.js**: Version 18 or higher (or Bun).
-- **Rust**: A recent Rust toolchain (rustc + cargo) is required to build the project unless you're on X64 Linux, for which a prebuilt binary is provided. The project has been tested with Rust 1.89.
+- **Rust**: Unless you're on X64 Linux, for which a prebuilt binary is provided, a recent Rust toolchain (rustc + cargo) is required to build the project. The project has been tested with Rust 1.89.
 
 ### Basic Usage
 
 ```typescript
-import { start, sendToChannel, subscribe } from 'wsbroker';
+import { start, sendToChannel, subscribe } from 'warpws';
 
 // Start the server and point it at your worker module (defaults to one worker thread per CPU core)
 start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js' });
@@ -70,18 +70,18 @@ export function handleClose(socketId, token) {
 
 ## API Reference
 
-WSBroker provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
+WarpWS provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
 
 The following is auto-generated from `src/index.cts`:
 
 ### start · function
 
-Starts a WebSocket broker server bound to the given address and (optionally)
+Starts a WebSocket server bound to the given address and (optionally)
 spawns worker threads that receive and handle WebSocket events.
 
 Notes:
 - Multiple servers can be started concurrently on different addresses.
-  Servers share global broker state (channels, tokens, subscriptions, etc.)
+  Servers share global server state (channels, tokens, subscriptions, etc.)
   and the same worker pool.
 - Calling `start` without `workerPath` requires that at least one worker
   has been registered previously via `registerWorkerThread`.
@@ -120,8 +120,7 @@ All handler methods are optional - if not provided, the respective functionality
 
 #### workerInterface.handleOpen · member
 
-Handles new WebSocket connections and can reject them, by returning `false` or throwing an Error.
-If not provided, all connections are accepted.
+Handles new WebSocket connections and can reject them. If not provided, all connections are accepted.
 
 **Type:** `(socketId: number, ip: string, headers: Record<string, string>) => boolean`
 
@@ -145,14 +144,14 @@ Handles WebSocket connection closures.
 
 ### registerWorkerThread · function
 
-Manually registers a worker thread with the broker to handle WebSocket messages.
+Manually registers a worker thread with the server to handle WebSocket messages.
 This function is normally not needed, as worker threads can be automatically registered by calling `start` with a `workerPath`.
 
 **Signature:** `(worker: WorkerInterface) => void`
 
 **Parameters:**
 
-- `worker` - - Worker interface implementation with optional handlers
+- `worker` - - Worker interface implementation with optional handlers.
 
 ### send · function
 
@@ -162,8 +161,8 @@ Sends data to a specific WebSocket connection.
 
 **Parameters:**
 
-- `socketId` - - The unique identifier of the WebSocket connection
-- `data` - - The data to send (Buffer, ArrayBuffer, or string)
+- `socketId` - - The unique identifier of the WebSocket connection.
+- `data` - - The data to send (Buffer, ArrayBuffer, or string).
 
 ### sendToChannel · function
 
@@ -173,8 +172,8 @@ Broadcasts data to all subscribers of a specific channel.
 
 **Parameters:**
 
-- `channelName` - - The name of the channel to broadcast to (Buffer, ArrayBuffer, or string)
-- `data` - - The data to broadcast (Buffer, ArrayBuffer, or string)
+- `channelName` - - The name of the channel to broadcast to (Buffer, ArrayBuffer, or string).
+- `data` - - The data to broadcast (Buffer, ArrayBuffer, or string).
 
 ### subscribe · function
 
@@ -184,10 +183,10 @@ Subscribes a WebSocket connection to a channel.
 
 **Parameters:**
 
-- `socketId` - - The unique identifier of the WebSocket connection
-- `channelName` - - The name of the channel to subscribe to (Buffer, ArrayBuffer, or string)
+- `socketId` - - The unique identifier of the WebSocket connection.
+- `channelName` - - The name of the channel to subscribe to (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if the subscription was added, false if already subscribed
+**Returns:** true if the subscription was added, false if already subscribed.
 
 ### unsubscribe · function
 
@@ -197,21 +196,21 @@ Unsubscribes a WebSocket connection from a channel.
 
 **Parameters:**
 
-- `socketId` - - The unique identifier of the WebSocket connection
-- `channelName` - - The name of the channel to unsubscribe from (Buffer, ArrayBuffer, or string)
+- `socketId` - - The unique identifier of the WebSocket connection.
+- `channelName` - - The name of the channel to unsubscribe from (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if the subscription was removed, false if not subscribed
+**Returns:** true if the subscription was removed, false if not subscribed.
 
 ### setToken · function
 
-Associates an (authentication) token with a WebSocket connection. It will be passed along with all subsequent events for that connection.
+Associates an authentication token with a WebSocket connection. It will be passed along with all subsequent events for that connection.
 
 **Signature:** `(socketId: number, token: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => void`
 
 **Parameters:**
 
-- `socketId` - - The unique identifier of the WebSocket connection
-- `token` - - The authentication token (Buffer, ArrayBuffer, or string)
+- `socketId` - - The unique identifier of the WebSocket connection.
+- `token` - - The authentication token (Buffer, ArrayBuffer, or string). It will be converted to a (UTF-8 encoded) Uint8Array.
 
 ### copySubscriptions · function
 
@@ -221,15 +220,15 @@ Copies all subscribers from one channel to another channel.
 
 **Parameters:**
 
-- `fromChannelName` - - The source channel name (Buffer, ArrayBuffer, or string)
-- `toChannelName` - - The destination channel name (Buffer, ArrayBuffer, or string)
+- `fromChannelName` - - The source channel name (Buffer, ArrayBuffer, or string).
+- `toChannelName` - - The destination channel name (Buffer, ArrayBuffer, or string).
 
 ## Examples
 
 ### Chat Server
 
 ```typescript
-import { start, sendToChannel, subscribe, unsubscribe } from 'wsbroker';
+import { start, sendToChannel, subscribe, unsubscribe } from 'warpws';
 
 start({ bind: '0.0.0.0:3000', workerPath: './chat-worker.js' });
 ```
@@ -258,7 +257,7 @@ export function handleTextMessage(data, socketId) {
 ### WebSocket Authentication Example
 
 ```typescript
-import { start, send, setToken, subscribe } from 'wsbroker';
+import { start, send, setToken, subscribe } from 'warpws';
 import jwt from 'jsonwebtoken';
 
 start({ bind: '0.0.0.0:3000', workerPath: './api-worker.js' });
@@ -306,7 +305,7 @@ npm test
 
 ### Development Workflow
 
-1. **Make changes** to the Rust code in `crates/wsbroker/src/lib.rs` or TypeScript code in `src/`
+1. **Make changes** to the Rust code in `crates/warpws/src/lib.rs` or TypeScript code in `src/`
 2. **Build the project** with `npm run debug` for development or `npm run build` for production
 3. **Test your changes** using the examples in the `example/` directory
 4. **Run tests** with `npm test` to ensure everything works correctly
@@ -342,7 +341,7 @@ For development and debugging:
 The directory structure of this project is:
 
 ```
-wsbroker/
+warpws/
 ├── Cargo.toml
 ├── README.md
 ├── dist/                  # Generated TypeScript output
@@ -351,11 +350,11 @@ wsbroker/
 |   ├── index.mts          # ESM entry point (just loads the CJS entry point)
 |   └── addon-loader.cts   # Loader for platform-specific binaries
 ├── crates/                # Rust source code
-|   └── wsbroker/
+|   └── warpws/
 |       └── src/
 |           └── lib.rs     # Main Rust implementation
 ├── example/               # Example applications
-|   ├── example.ts         # Server example (sets up WSBroker and static HTTP)
+|   ├── example.ts         # Server example (sets up WarpWS and static HTTP)
 |   ├── worker.ts          # Event-handling logic for the example, ran in worker threads
 |   └── client/            # Client-side code for the example
 ├── build/                 # Path for native addon binaries

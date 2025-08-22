@@ -21,7 +21,7 @@ const outDir = join(root, 'build');
 const outName = `${platform}-${arch}.node`;
 
 function artifactPath() {
-    for(let name of ['wsbroker.dll', 'libwsbroker.dylib', 'libwsbroker.so']) {
+    for(let name of ['warpws.dll', 'libwarpws.dylib', 'libwarpws.so']) {
         const artifact = join(targetDir, name);
         if (existsSync(artifact)) {
             return artifact;
@@ -47,12 +47,12 @@ function buildNative() {
 if (process.argv.length == 3 && process.argv[2] === '--postinstall') {
     const candidate = join(outDir, outName);
     if (!existsSync(candidate)) {
-        console.log(`[wsbroker] No prebuilt binary for ${platform}-${arch}. Building native addon...`);
+        console.log(`[warpws] No prebuilt binary for ${platform}-${arch}. Building native addon...`);
         buildNative();
     }
 } else if (process.argv.length == 3 && process.argv[2] === '--prepublish') {
     if (!(platform === 'linux' && arch === 'x64')) {
-        console.error('[wsbroker] Publishing is only allowed from linux-x64.');
+        console.error('[warpws] Publishing is only allowed from linux-x64.');
         exit(1);
     }
     buildNative();
