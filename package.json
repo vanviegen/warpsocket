@@ -1,6 +1,6 @@
 {
   "name": "wsbroker",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
     "test": "tsc &&cargo test",
