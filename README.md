@@ -307,7 +307,7 @@ npm test
 
 1. **Make changes** to the Rust code in `crates/warpws/src/lib.rs` or TypeScript code in `src/`
 2. **Build the project** with `npm run debug` for development or `npm run build` for production
-3. **Test your changes** using the examples in the `example/` directory
+3. **Test your changes** by creating additional tests in `test/e2e/` and running them with `npm test`
 4. **Run tests** with `npm test` to ensure everything works correctly
 5. **Update reference docs** in README.md using `npm run docs` if you've changed TypeScript interfaces or JSDoc comments
 
@@ -317,10 +317,10 @@ The project includes example code to help you get started:
 
 ```sh
 # Build and run the example server
-npm run build && node dist/example/example.ts
+npm run build && node dist/examples/chat/example.ts
 
 # Or without compilation step (if using bun or a very recent Node.js)
-bun example/example.ts
+bun examples/chat/example.ts
 
 # Point your browser at http://localhost:3000
 ```
@@ -353,10 +353,11 @@ warpws/
 |   └── warpws/
 |       └── src/
 |           └── lib.rs     # Main Rust implementation
-├── example/               # Example applications
-|   ├── example.ts         # Server example (sets up WarpWS and static HTTP)
-|   ├── worker.ts          # Event-handling logic for the example, ran in worker threads
-|   └── client/            # Client-side code for the example
+├── examples/              # Example applications
+|   ├── chat/              # Chat example
+|   │   ├── example.ts     # Server example (sets up WarpWS and static HTTP)
+|   │   ├── worker.ts      # Event-handling logic for the example, ran in worker threads
+|   │   └── client/        # Client-side code for the example
 ├── build/                 # Path for native addon binaries
 ├── build-addon.js         # Build script for the native addon
 ├── package.json
