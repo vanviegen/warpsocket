@@ -3,62 +3,47 @@
 
 const { spawnSync } = require('node:child_process');
 const { platform, arch, exit } = process;
-const { join } = require('node:path');
+const path = require('node:path');
 const { mkdirSync, copyFileSync, existsSync } = require('node:fs');
 
-// Helper to run a command and exit on failure
-function run(cmd, args, opts) {
-    const res = spawnSync(cmd, args, { stdio: 'inherit', ...opts });
-    if (res.status !== 0) {
-        exit(res.status || 1);
-    }
-    return res;
-}
-
-const root = __dirname; // script lives at repo/package root
-const targetDir = join(root, 'target', 'release');
-const outDir = join(root, 'build');
-const outName = `${platform}-${arch}.node`;
-
-function artifactPath() {
-    for(let name of ['warpws.dll', 'libwarpws.dylib', 'libwarpws.so']) {
-        const artifact = join(targetDir, name);
-        if (existsSync(artifact)) {
-            return artifact;
-        }
-    }
-}
-
-function buildNative() {
-    // Build Rust cdylib using local toolchain
-    run('cargo', ['build', '--release', '--manifest-path', join(root, 'Cargo.toml')]);
-
-    const artifact = artifactPath();
-    if (!artifact) {
-        console.error(`Build succeeded but artifact not found in ${targetDir}`);
+// Parse CLI flags
+let mode = "default"; // "default" | "postinstall" | "prepublish"
+let profile = "release"; // "debug" | "release"
+for (let a of process.argv.slice(2)) {
+    if (a === '--postinstall' || a === '--prepublish') {
+        mode = a.slice(2);
+    } else if (a === '--debug' || a === '--release') {
+        profile = a.slice(2);
+    } else {
+        console.error(`Unknown argument: ${a}`);
+        console.error('Usage: build-addon.js [--postinstall|--prepublish] [--debug|--release]');
         exit(1);
     }
-
-    mkdirSync(outDir, { recursive: true });
-    copyFileSync(artifact, join(outDir, outName));
-    console.log(`Built native addon -> build/${outName}`);
 }
 
-if (process.argv.length == 3 && process.argv[2] === '--postinstall') {
-    const candidate = join(outDir, outName);
-    if (!existsSync(candidate)) {
-        console.log(`[warpws] No prebuilt binary for ${platform}-${arch}. Building native addon...`);
-        buildNative();
-    }
-} else if (process.argv.length == 3 && process.argv[2] === '--prepublish') {
+const outDir = path.join(__dirname, 'build'); // script lives at repo/package root
+mkdirSync(outDir, { recursive: true });
+const outPath = path.join(outDir, `${platform}-${arch}.node`);
+
+if (mode==='postinstall') {
+    if (existsSync(outPath)) exit(0); // already built
+    console.log(`[warpws] No prebuilt binary for ${platform}-${arch}. Building native addon...`);
+} else if (mode==='prepublish') {
     if (!(platform === 'linux' && arch === 'x64')) {
         console.error('[warpws] Publishing is only allowed from linux-x64.');
         exit(1);
     }
-    buildNative();
-} else if (process.argv.length == 2) {
-    buildNative();
-} else {
-    console.error('Usage: build-addon.js [--postinstall|--prepublish]');
+}
+
+const res = spawnSync("cargo", ['build'].concat(profile==='release' ? ['--release'] : []), { stdio: 'inherit' });
+if (res.status !== 0) exit(res.status || 1);
+
+const artifacts = ['warpws.dll', 'libwarpws.dylib', 'libwarpws.so'].map(name => path.join(__dirname, 'target', profile, name));
+const artifact = artifacts.find(p => existsSync(p));
+if (!artifact) {
+    console.error(`Build succeeded but artifact not found in`, artifacts);
     exit(1);
 }
+
+copyFileSync(artifact, outPath);
+console.log(`Built native addon -> ${outPath}`);

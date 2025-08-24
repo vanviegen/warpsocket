@@ -68,6 +68,18 @@ export function handleClose(socketId, token) {
 }
 ```
 
+## Performance
+
+The `examples/performance/` directory contains a simple benchmarking test. I'm planning to do a more thorough performance analysis on AWS soon (I've already had AI generate a Terraform config for it, but haven't had the heart to run it yet), but for now here's a workload I was able to sustain on my laptop:
+
+- 60,000 concurrent connections, each subscribed to one of 6,000 channels
+- ~70,000 incoming messages per second, delivered to JavaScript
+- ~770,000 outgoing messages per second (for each incoming message, we do a reply and a broadcast to a channel of 10 random subscribers)
+- ~50% utilization of my AMD Ryzen 9 6900HX CPU (the other 50% being the 6 clients generating the load)
+- ~980 MB of resident RAM
+
+I suspect that it will be possible to squeeze out more performance, using some profiling and optimization. But given the above numbers, I haven't felt the need yet.
+
 ## API Reference
 
 WarpWS provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
@@ -292,7 +304,7 @@ export function handleTextMessage(data, socketId, currentToken) {
 ### How to build
 
 - `npm run build`: Builds TypeScript files to JavaScript in `dist/` and builds the native addon (see below).
-- `npm run build:native`: Builds only the native addon. This creates `build/<platform>-<arch>.node` using your local Rust toolchain.
+- `npm run build:native`: Builds only the native addon. This creates `build/<platform>-<arch>.node` using your local Rust toolchain. To build a debug binary, run: `npm run build:native -- --debug`.
 - `npm run docs`: Updates the reference documentation section of README.md based on `src/index.cts`.
 
 ### End-to-end tests
@@ -311,7 +323,7 @@ npm test
 4. **Run tests** with `npm test` to ensure everything works correctly
 5. **Update reference docs** in README.md using `npm run docs` if you've changed TypeScript interfaces or JSDoc comments
 
-### Running the example
+### Running the chat example
 
 The project includes example code to help you get started:
 
@@ -325,16 +337,20 @@ bun examples/chat/example.ts
 # Point your browser at http://localhost:3000
 ```
 
-### Debugging
+### Running the performance test
 
-For development and debugging:
+Start the server using:
 
-1. Use `npm run debug` to build with debug symbols
-2. Set the `RUST_LOG` environment variable for detailed logging:
-   ```sh
-   RUST_LOG=debug node your-app.js
-   ```
-3. Use Node.js debugging tools as normal for the JavaScript/TypeScript code
+```sh
+node dist/examples/performance/server/server.js --bind 0.0.0.0:3000 --threads 16
+```
+
+Start multiple servers, preferably on different machines:
+
+```sh
+node dist/examples/performance/client/client.js --host 127.0.0.1 --port 3000 --conns 10000
+```
+
 
 ## Project Layout
 
