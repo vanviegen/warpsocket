@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { start } from 'warpws';
+import { start } from 'warpsocket';
 
 // Simple performance test server bootstrap.
 // Usage: node dist/examples/performance/server/server.js --bind 0.0.0.0:3000 --threads <N>
@@ -17,7 +17,7 @@ function arg(name: string, def?: string) {
   const [host,portStr] = bind.split(':');
   const port = parseInt(portStr);
 
-  console.log(`[perf-server] starting warpws on ${bind} through :${port + 15} with threads=${threads ?? 'auto'}`);
+  console.log(`[perf-server] starting warpsocket on ${bind} through :${port + 15} with threads=${threads ?? 'auto'}`);
   await start({
     bind,
     workerPath: path.resolve(__dirname, './worker.js'),

@@ -25,7 +25,7 @@ resource "aws_vpc" "perf" {
   cidr_block           = "10.10.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = { Name = "warpws-perf" }
+  tags = { Name = "warpsocket-perf" }
 }
 
 resource "aws_subnet" "perf" {
@@ -55,7 +55,7 @@ resource "aws_route_table_association" "rta" {
 data "aws_availability_zones" "available" {}
 
 resource "aws_security_group" "perf" {
-  name   = "warpws-perf-sg"
+  name   = "warpsocket-perf-sg"
   vpc_id = aws_vpc.perf.id
 
   ingress {
@@ -108,14 +108,14 @@ resource "aws_instance" "server" {
   key_name               = aws_key_pair.perf.key_name
   user_data              = <<-EOT
     ${local.user_data_common}
-    mkdir -p /opt/warpws-perf
-    cd /opt/warpws-perf
-    git clone https://github.com/vanviegen/warpws .
+    mkdir -p /opt/warpsocket-perf
+    cd /opt/warpsocket-perf
+    git clone https://github.com/vanviegen/warpsocket .
     npm ci
     npm run build
     pm2 start dist/examples/performance/server/server.js -- --bind 0.0.0.0:3000
   EOT
-  tags = { Name = "warpws-perf-server" }
+  tags = { Name = "warpsocket-perf-server" }
 }
 
 resource "aws_instance" "client" {
@@ -127,9 +127,9 @@ resource "aws_instance" "client" {
   key_name               = aws_key_pair.perf.key_name
   user_data              = <<-EOT
     ${local.user_data_common}
-    mkdir -p /opt/warpws-perf
-    cd /opt/warpws-perf
-    git clone https://github.com/vanviegen/warpws .
+    mkdir -p /opt/warpsocket-perf
+    cd /opt/warpsocket-perf
+    git clone https://github.com/vanviegen/warpsocket .
     npm ci
     npm run build
     # Run one client process per core
@@ -138,7 +138,7 @@ resource "aws_instance" "client" {
       pm2 start dist/examples/performance/client/client.js --name perf-client-${'$'}i -- --url ws://${aws_instance.server.public_ip}:3000 --conns 10000
     done
   EOT
-  tags = { Name = "warpws-perf-client" }
+  tags = { Name = "warpsocket-perf-client" }
 }
 
 data "aws_ami" "ubuntu" {

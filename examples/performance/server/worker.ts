@@ -1,4 +1,4 @@
-import { send, sendToChannel, subscribe } from 'warpws';
+import { send, sendToChannel, subscribe } from 'warpsocket';
 
 // Each worker uses a unique prefix so their channel namespaces don't collide
 // The native side runs N workers; we can't directly know the index here, so we

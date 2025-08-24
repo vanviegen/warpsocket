@@ -27,10 +27,10 @@ const outPath = path.join(outDir, `${platform}-${arch}.node`);
 
 if (mode==='postinstall') {
     if (existsSync(outPath)) exit(0); // already built
-    console.log(`[warpws] No prebuilt binary for ${platform}-${arch}. Building native addon...`);
+    console.log(`[warpsocket] No prebuilt binary for ${platform}-${arch}. Building native addon...`);
 } else if (mode==='prepublish') {
     if (!(platform === 'linux' && arch === 'x64')) {
-        console.error('[warpws] Publishing is only allowed from linux-x64.');
+        console.error('[warpsocket] Publishing is only allowed from linux-x64.');
         exit(1);
     }
 }
@@ -38,7 +38,7 @@ if (mode==='postinstall') {
 const res = spawnSync("cargo", ['build'].concat(profile==='release' ? ['--release'] : []), { stdio: 'inherit' });
 if (res.status !== 0) exit(res.status || 1);
 
-const artifacts = ['warpws.dll', 'libwarpws.dylib', 'libwarpws.so'].map(name => path.join(__dirname, 'target', profile, name));
+const artifacts = ['warpsocket.dll', 'libwarpsocket.dylib', 'libwarpsocket.so'].map(name => path.join(__dirname, 'target', profile, name));
 const artifact = artifacts.find(p => existsSync(p));
 if (!artifact) {
     console.error(`Build succeeded but artifact not found in`, artifacts);

@@ -1,24 +1,24 @@
-# WarpWS
+# WarpSocket
 
 Node-API addon for writing high-performance multi-threaded WebSocket servers.
 
 How does this work?
 
-- WebSocket connections are accepted and managed by WarpWS's multi-threaded Rust code.
+- WebSocket connections are accepted and managed by WarpSocket's multi-threaded Rust code.
 - Incoming WebSocket messages (and other events) are handed off to JavaScript callback methods, allowing you to write application logic.
-- Your application logic can call WarpWS functions for:
+- Your application logic can call WarpSocket functions for:
   - Sending messages to specific WebSocket connections.
   - Subscribing connections to named channels.
   - Broadcasting messages to these named channels.
   - Attaching a token (meta information) to a connection.
 - JavaScript callbacks are load-balanced across multiple JavaScript worker threads.
 
-So what WarpWS buys you compared to the standard Node.js WebSocket library (`ws`) is:
+So what WarpSocket buys you compared to the standard Node.js WebSocket library (`ws`) is:
 - More performant and memory efficient connection handling.
 - Multi-threading, while still allowing you to efficiently send/broadcast to any WebSocket connection.
 - A ready-made channel system for broadcasting messages to multiple subscribers.
 
-Compared to [PushPin](https://github.com/fastly/pushpin), WarpWS is:
+Compared to [PushPin](https://github.com/fastly/pushpin), WarpSocket is:
 - Only usable in a Node.js (or Bun) application.
 - More lightweight and easier to deploy: just an npm install, no need to run a separate server process.
 - Capable of running your business logic in parallel JavaScript threads.
@@ -29,7 +29,7 @@ Compared to [PushPin](https://github.com/fastly/pushpin), WarpWS is:
 ### Installation
 
 ```sh
-npm install warpws
+npm install warpsocket
 ```
 
 Requirements:
@@ -40,7 +40,7 @@ Requirements:
 ### Basic Usage
 
 ```typescript
-import { start, sendToChannel, subscribe } from 'warpws';
+import { start, sendToChannel, subscribe } from 'warpsocket';
 
 // Start the server and point it at your worker module (defaults to one worker thread per CPU core)
 start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js' });
@@ -82,7 +82,7 @@ I suspect that it will be possible to squeeze out more performance, using some p
 
 ## API Reference
 
-WarpWS provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
+WarpSocket provides a comprehensive TypeScript API for building real-time applications. The core functions allow you to start the server, send messages, handle channels, and manage authentication. All functions are fully typed and include detailed JSDoc documentation.
 
 The following is auto-generated from `src/index.cts`:
 
@@ -240,7 +240,7 @@ Copies all subscribers from one channel to another channel.
 ### Chat Server
 
 ```typescript
-import { start, sendToChannel, subscribe, unsubscribe } from 'warpws';
+import { start, sendToChannel, subscribe, unsubscribe } from 'warpsocket';
 
 start({ bind: '0.0.0.0:3000', workerPath: './chat-worker.js' });
 ```
@@ -269,7 +269,7 @@ export function handleTextMessage(data, socketId) {
 ### WebSocket Authentication Example
 
 ```typescript
-import { start, send, setToken, subscribe } from 'warpws';
+import { start, send, setToken, subscribe } from 'warpsocket';
 import jwt from 'jsonwebtoken';
 
 start({ bind: '0.0.0.0:3000', workerPath: './api-worker.js' });
@@ -317,7 +317,7 @@ npm test
 
 ### Development Workflow
 
-1. **Make changes** to the Rust code in `crates/warpws/src/lib.rs` or TypeScript code in `src/`
+1. **Make changes** to the Rust code in `crates/warpsocket/src/lib.rs` or TypeScript code in `src/`
 2. **Build the project** with `npm run debug` for development or `npm run build` for production
 3. **Test your changes** by creating additional tests in `test/e2e/` and running them with `npm test`
 4. **Run tests** with `npm test` to ensure everything works correctly
@@ -357,7 +357,7 @@ node dist/examples/performance/client/client.js --host 127.0.0.1 --port 3000 --c
 The directory structure of this project is:
 
 ```
-warpws/
+warpsocket/
 ├── Cargo.toml
 ├── README.md
 ├── dist/                  # Generated TypeScript output
@@ -366,12 +366,12 @@ warpws/
 |   ├── index.mts          # ESM entry point (just loads the CJS entry point)
 |   └── addon-loader.cts   # Loader for platform-specific binaries
 ├── crates/                # Rust source code
-|   └── warpws/
+|   └── warpsocket/
 |       └── src/
 |           └── lib.rs     # Main Rust implementation
 ├── examples/              # Example applications
 |   ├── chat/              # Chat example
-|   │   ├── example.ts     # Server example (sets up WarpWS and static HTTP)
+|   │   ├── example.ts     # Server example (sets up WarpSocket and static HTTP)
 |   │   ├── worker.ts      # Event-handling logic for the example, ran in worker threads
 |   │   └── client/        # Client-side code for the example
 ├── build/                 # Path for native addon binaries

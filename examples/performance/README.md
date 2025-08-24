@@ -1,7 +1,7 @@
 # Performance suite
 
 This example spins up:
-- A WarpWS server with worker threads and a worker that:
+- A WarpSocket server with worker threads and a worker that:
   - subscribes each new connection into channels of 10 subscribers (per worker namespace)
   - on each request, broadcasts to the channel and then replies with an ack
   - prints statistics every 10s: subscribers and handled requests

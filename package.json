@@ -1,6 +1,6 @@
 {
-  "name": "warpws",
-  "version": "0.1.1",
+  "name": "warpsocket",
+  "version": "0.1.2",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
     "build": "tsc && npm run build:native",

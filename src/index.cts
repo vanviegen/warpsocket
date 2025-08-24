@@ -1,11 +1,11 @@
 // This module is the CJS entry point for the library.
 
-import * as addon from 'warpws/addon-loader';
+import * as addon from 'warpsocket/addon-loader';
 import { Worker } from 'node:worker_threads';
 import * as os from 'node:os';
 import * as pathMod from 'node:path';
 
-declare module "warpws/addon-loader" {
+declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
     function send(socketId: number, data: Uint8Array | ArrayBuffer | string): void;
@@ -102,13 +102,13 @@ export async function start(options: { bind: string, workerPath?: string, thread
 
 const BOOTSTRAP_WORKER = `
 const { workerData: workerModulePath, parentPort } = require('node:worker_threads');
-const addon = require('warpws/addon-loader');
+const addon = require('warpsocket/addon-loader');
 (async () => {
     const workerModule = await import(workerModulePath);
     addon.registerWorkerThread(workerModule);
     parentPort.postMessage({ type: 'registered' });
 })().catch((err) => {
-    console.error('warpws: worker init failed:', err);
+    console.error('warpsocket: worker init failed:', err);
 });
 `;
 
@@ -128,11 +128,11 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
         });
 
         w.on('error', (err) => {
-            console.error('warpws: worker thread error:', err);
+            console.error('warpsocket: worker thread error:', err);
         });
 
         w.on('exit', (code) => {
-            console.error('warpws: worker thread exited with code', code);
+            console.error('warpsocket: worker thread exited with code', code);
             if (running) {
                 // Start a replacement worker
                 spawnWorker(workerModulePath, true);

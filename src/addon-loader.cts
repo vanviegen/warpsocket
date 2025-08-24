@@ -10,7 +10,7 @@ const candidates = [
 
 let modulePath = candidates.find(p => fs.existsSync(p));
 if (!modulePath) {
-	throw new Error(`warpws: Native binary not found. Searched in ${candidates.join(', ')} for ${filename}. Please run "npm run build:native" to build it.`);
+	throw new Error(`warpsocket: Native binary not found. Searched in ${candidates.join(', ')} for ${filename}. Please run "npm run build:native" to build it.`);
 }
 
 module.exports = require(modulePath);

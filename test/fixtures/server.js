@@ -1,4 +1,4 @@
-const { start } = require('warpws');
+const { start } = require('warpsocket');
 
 const port = process.env.PORT || '3010';
 const workerPath = process.env.WORKER_PATH;
