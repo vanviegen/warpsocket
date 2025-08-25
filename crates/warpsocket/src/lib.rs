@@ -202,6 +202,20 @@ fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
+fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let arg0 = read_arg::<JsValue>(&mut cx, 0)?;
+    let channel_name = js_value_to_bytes(&mut cx, arg0)?;
+    
+    // Check if the channel exists
+    let has_active = if let Some(channel) = CHANNELS.get(&channel_name) {
+        // Check if any subscriber is still active (short-circuits on first match)
+        channel.iter().any(|socket_id| SOCKET_SENDERS.contains_key(socket_id))
+    } else {
+        false
+    };
+    Ok(cx.boolean(has_active))
+}
+
 // Must be called from the main thread for this js context
 fn invoke_js_callback<'a, C: Context<'a>>(
     cx: &mut C,
@@ -484,6 +498,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("unsubscribe", unsubscribe)?;
     cx.export_function("setToken", set_token)?;
     cx.export_function("copySubscriptions", copy_subscriptions)?;
+    cx.export_function("hasSubscriptions", has_subscription)?;
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-const { subscribe, sendToChannel, setToken, send } = require('warpsocket');
+const { subscribe, sendToChannel, setToken, send, hasSubscriptions } = require('warpsocket');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {
@@ -17,6 +17,10 @@ function handleTextMessage(data, socketId, currentToken) {
       break;
     case 'pub':
       sendToChannel(msg.channel, JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data }));
+      break;
+    case 'hasSubscriptions':
+      const hasSubs = hasSubscriptions(msg.channel);
+      send(socketId, JSON.stringify({ type: 'hasSubscriptions', channel: msg.channel, result: hasSubs }));
       break;
     case 'auth':
       setToken(socketId, typeof msg.token === 'string' ? msg.token : JSON.stringify(msg.token));

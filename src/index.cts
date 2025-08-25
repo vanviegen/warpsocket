@@ -14,6 +14,7 @@ declare module "warpsocket/addon-loader" {
     function unsubscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
     function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): void;
+    function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
 }
 
 /**
@@ -214,3 +215,10 @@ export const setToken = addon.setToken;
 * @param toChannelName - The destination channel name (Buffer, ArrayBuffer, or string).
 */
 export const copySubscriptions = addon.copySubscriptions;
+
+/**
+ * Checks if a channel has any subscribers.
+ * @param channelName - The name of the channel to check (Buffer, ArrayBuffer, or string).
+ * @returns True if the channel has subscribers, false otherwise.
+ */
+export const hasSubscriptions = addon.hasSubscriptions;
