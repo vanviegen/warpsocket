@@ -14,13 +14,23 @@ use neon::types::buffer::TypedArray;
 use neon::event::Channel;
 use std::sync::Arc;
 
+enum SocketEntry {
+    // Actual WebSocket connection with sender and optional token
+    Actual {
+        sender_mutex: tokio::sync::Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>>,
+        token: Option<Vec<u8>>,
+    },
+    // Virtual socket pointing to another socket ID (which may be actual or virtual)
+    Virtual {
+        target_socket_id: u64,
+    },
+}
+
 lazy_static! {
     // Maps channel names to sets of socket IDs subscribed to each channel
     static ref CHANNELS: DashMap<Vec<u8>, HashSet<u64>> = DashMap::new();
-    // Maps socket IDs to their WebSocket senders
-    static ref SOCKET_SENDERS: DashMap<u64, tokio::sync::Mutex<futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>>> = DashMap::new();
-    // Maps socket IDs to their authentication tokens
-    static ref SOCKET_TOKENS: DashMap<u64, Vec<u8>> = DashMap::new();
+    // Maps socket IDs to their SocketEntry (actual or virtual)
+    static ref SOCKETS: DashMap<u64, SocketEntry> = DashMap::new();
     // Maps worker thread IDs to their associated WorkerThread instances
     static ref WORKERS: DashMap<u64, Worker> = DashMap::new();
     // Global runtime for executing async operations from sync contexts
@@ -41,6 +51,73 @@ struct Worker {
     binary_message_handler: Option<Arc<Root<JsFunction>>>,
     close_handler: Option<Arc<Root<JsFunction>>>,
     open_handler: Option<Arc<Root<JsFunction>>>,
+}
+
+// Resolves a socket ID to the final actual socket, following virtual socket chains
+macro_rules! with_socket {
+    ($socket_id:expr, $sender:ident, $token:ident => $body:block) => {
+        let mut current_id = $socket_id;
+        loop {
+            match SOCKETS.get(&current_id) {
+                Some(entry) => match entry.value() {
+                    SocketEntry::Actual { sender_mutex, token } => {
+                        let $sender = sender_mutex;
+                        let $token = token;
+                        $body
+                        break;
+                    }
+                    SocketEntry::Virtual { target_socket_id } => {
+                        current_id = *target_socket_id;
+                        continue;
+                    }
+                },
+                None => break,
+            }
+        }
+    };
+}
+
+// Resolves a socket ID to the final actual socket with mutable access
+macro_rules! with_socket_mut {
+    ($socket_id:expr, $sender:ident, $token:ident => $body:block) => {
+        let mut current_id = $socket_id;
+        loop {
+            match SOCKETS.get_mut(&current_id) {
+                Some(mut entry) => match entry.value_mut() {
+                    SocketEntry::Actual { sender_mutex, token } => {
+                        let $sender = sender_mutex;
+                        let $token = token;
+                        $body
+                        break;
+                    }
+                    SocketEntry::Virtual { target_socket_id } => {
+                        let next_id = *target_socket_id;
+                        drop(entry); // Release the lock before continuing
+                        current_id = next_id;
+                        continue;
+                    }
+                },
+                None => break,
+            }
+        }
+    };
+}
+
+// Check if a socket exists (following virtual socket chains to actual sockets)
+fn check_socket_exists(socket_id: u64) -> bool {
+    let mut current_id = socket_id;
+    loop {
+        match SOCKETS.get(&current_id) {
+            Some(entry) => match entry.value() {
+                SocketEntry::Actual { .. } => return true,
+                SocketEntry::Virtual { target_socket_id } => {
+                    current_id = *target_socket_id;
+                    continue;
+                }
+            },
+            None => return false,
+        }
+    }
 }
 
 fn read_arg<'a, T>(cx: &mut FunctionContext<'a>, index: usize) -> NeonResult<Handle<'a, T>>
@@ -112,12 +189,12 @@ fn send(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let message = js_value_to_message(&mut cx, arg1)?;
     
-    if let Some(sender_mutex) = SOCKET_SENDERS.get(&socket_id) {
+    with_socket!(socket_id, sender_mutex, _token => {
         RUNTIME.block_on(async move {
             let mut sender = sender_mutex.lock().await;
             sender.send(message).await.unwrap_or_else(|e| println!("Send failed: {}", e));
         });
-    }
+    });
     
     Ok(cx.undefined())
 }
@@ -135,10 +212,10 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 
         RUNTIME.block_on(async move {
             for socket_id in subscriber_ids {
-                if let Some(sender_mutex) = SOCKET_SENDERS.get(&socket_id) {
+                with_socket!(socket_id, sender_mutex, _token => {
                     let mut sender = sender_mutex.lock().await;
                     sender.send(message.clone()).await.unwrap_or_else(|e| println!("Send failed: {}", e));
-                }
+                });
             }
         });
     }
@@ -175,7 +252,10 @@ fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
     let token = js_value_to_bytes(&mut cx, arg1)?;
     
-    SOCKET_TOKENS.insert(socket_id, token);
+    // Update the token for the actual socket
+    with_socket_mut!(socket_id, _sender_mutex, stored_token => {
+        *stored_token = Some(token);
+    });
     
     Ok(cx.undefined())
 }
@@ -208,12 +288,36 @@ fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     
     // Check if the channel exists
     let has_active = if let Some(channel) = CHANNELS.get(&channel_name) {
-        // Check if any subscriber is still active (short-circuits on first match)
-        channel.iter().any(|socket_id| SOCKET_SENDERS.contains_key(socket_id))
+        // Check if any subscriber resolves to an actual active socket (short-circuits on first match)
+        channel.iter().any(|socket_id| check_socket_exists(*socket_id))
     } else {
         false
     };
     Ok(cx.boolean(has_active))
+}
+
+fn create_virtual_socket(mut cx: FunctionContext) -> JsResult<JsNumber> {
+    let target_socket_id = read_arg::<JsNumber>(&mut cx, 0)?.value(&mut cx) as u64;
+    let virtual_socket_id = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+    
+    SOCKETS.insert(virtual_socket_id, SocketEntry::Virtual { target_socket_id });
+    
+    Ok(cx.number(virtual_socket_id as f64))
+}
+
+fn delete_virtual_socket(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let virtual_socket_id = read_arg::<JsNumber>(&mut cx, 0)?.value(&mut cx) as u64;
+
+    let opt_pair = SOCKETS.remove_if(&virtual_socket_id, |_key,val| match val {
+        SocketEntry::Virtual { .. } => true,
+        SocketEntry::Actual { .. } => false,
+    });
+
+    Ok(cx.boolean(if let Some(..) = opt_pair {
+        true
+    } else {
+        false
+    }))
 }
 
 // Must be called from the main thread for this js context
@@ -377,7 +481,9 @@ async fn handle_connection(stream: TcpStream) {
     let ws_stream = match accept_result {
         Ok(ws_stream) => ws_stream,
         Err(e) => {
-            eprintln!("WebSocket connection failed: {}", e);
+            if e.to_string() != "WebSocket protocol error: Handshake not finished" {
+                eprintln!("WebSocket connection failed: {}", e);
+            }
             return;
         }
     };
@@ -385,7 +491,10 @@ async fn handle_connection(stream: TcpStream) {
     let (ws_sender, mut ws_receiver) = ws_stream.split();
     
     // Store the WebSocket sender in global map
-    SOCKET_SENDERS.insert(socket_id, tokio::sync::Mutex::new(ws_sender));
+    SOCKETS.insert(socket_id, SocketEntry::Actual {
+        sender_mutex: tokio::sync::Mutex::new(ws_sender),
+        token: None,
+    });
     
     // Handle incoming messages
     while let Some(msg) = ws_receiver.next().await {
@@ -401,14 +510,9 @@ async fn handle_connection(stream: TcpStream) {
         }
     }
     
-    // Get token before cleanup
-    let token = SOCKET_TOKENS.get(&socket_id)
-    .map(|entry| entry.clone());
-    
-    // Cleanup
-    SOCKET_SENDERS.remove(&socket_id);
-    SOCKET_TOKENS.remove(&socket_id);
-    
+    // Remove the socket from the dashmap
+    let socket = SOCKETS.remove(&socket_id).unwrap().1;
+
     // Call close handler
     let worker = WORKERS.get(&worker_id).unwrap();
     if let Some(handler) = &worker.close_handler {
@@ -416,14 +520,14 @@ async fn handle_connection(stream: TcpStream) {
         
         worker.channel.send(move |mut cx| {
             let callback = handler.to_inner(&mut cx);
-            let js_socket_id = cx.number(socket_id as f64);
             
-            let js_token = match token {
-                Some(ref token_data) => create_js_buffer(&mut cx, token_data)?.upcast::<JsValue>(),
-                None => cx.null().upcast(),
+            let js_socket_id = cx.number(socket_id as f64).upcast();
+            let js_token = match socket {
+                SocketEntry::Actual { token: Some(token), .. } => create_js_buffer(&mut cx, &token)?.upcast::<JsValue>(),
+                _ => cx.undefined().upcast(),
             };
-            
-            invoke_js_callback(&mut cx, callback, vec![js_socket_id.upcast(), js_token]);
+
+            invoke_js_callback(&mut cx, callback, vec![js_socket_id, js_token]);
 
             Ok(())
         });
@@ -441,7 +545,10 @@ async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message)
 
     if let Some(handler) = opt_handler {
         let handler = Arc::clone(handler);
-        let token = SOCKET_TOKENS.get(&socket_id).map(|entry| entry.clone());
+        let mut token_copy = None;
+        with_socket!(socket_id, _sender_mutex, token => {
+            token_copy = token.clone();
+        });
         
         worker.channel.send(move |mut cx| {
             let callback = handler.to_inner(&mut cx);
@@ -458,7 +565,7 @@ async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message)
             
             let js_socket_id = cx.number(socket_id as f64);
             
-            let js_token = match token {
+            let js_token = match token_copy {
                 Some(ref token_data) => create_js_buffer(&mut cx, token_data)?.upcast::<JsValue>(),
                 None => cx.null().upcast(),
             };
@@ -471,21 +578,19 @@ async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message)
 }
 
 fn cleanup_disconnected_connections() {
-    let mut to_remove = Vec::new();
-    
-    for mut entry in CHANNELS.iter_mut() {
-        let subscribers = entry.value_mut();
-        subscribers.retain(|socket_id| SOCKET_SENDERS.contains_key(socket_id));
-        
-        if subscribers.is_empty() {
-            to_remove.push(entry.key().clone());
+    // Clean up virtual sockets that point to non-existent actual sockets
+    SOCKETS.retain(|_key, entry| {
+        match entry {
+            SocketEntry::Virtual { target_socket_id } => check_socket_exists(*target_socket_id),
+            SocketEntry::Actual { .. } => true,
         }
-    }
-    
-    for channel_name in to_remove {
-        // Atomically double check that the channel is still empty before removing
-        CHANNELS.remove_if(&channel_name, |_key, value| value.is_empty());
-    }
+    });
+
+    // Cleanup subscribers pointing at non-existent sockets and channels without subscribers
+    CHANNELS.retain(|_key, subscribers| {
+        subscribers.retain(|socket_id| SOCKETS.contains_key(socket_id));
+        !subscribers.is_empty()
+    });
 }
 
 #[neon::main]
@@ -499,6 +604,8 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("setToken", set_token)?;
     cx.export_function("copySubscriptions", copy_subscriptions)?;
     cx.export_function("hasSubscriptions", has_subscription)?;
+    cx.export_function("createVirtualSocket", create_virtual_socket)?;
+    cx.export_function("deleteVirtualSocket", delete_virtual_socket)?;
     Ok(())
 }
 

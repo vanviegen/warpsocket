@@ -1,6 +1,7 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const portfinder = require('portfinder');
+const net = require('node:net');
 
 async function spawnServer(opts = {}) {
   const port = await portfinder.getPortPromise();
@@ -15,37 +16,51 @@ async function spawnServer(opts = {}) {
         THREADS: "threads" in opts ? JSON.stringify(opts.threads) : "0",
         RUST_LOG: process.env.RUST_LOG || 'warn'
     },
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'inherit', 'inherit']
   });
 
-  let stderrBuf = '';
-  child.stderr.on('data', (d) => { stderrBuf += d.toString(); });
-
   await new Promise((resolve, reject) => {
-    const onData = (chunk) => {
-      if (chunk.toString().includes('READY')) {
+    const maxAttempts = 300; // 300 attempts * 50ms = 15 seconds max
+    let attempts = 0;
+    
+    const tryConnect = () => {
+      attempts++;
+      
+      const socket = new net.Socket();
+      
+      socket.on('connect', () => {
+        socket.destroy();
         cleanup();
         resolve();
-      }
+      });
+      
+      socket.on('error', () => {
+        socket.destroy();
+        if (attempts >= maxAttempts) {
+          cleanup();
+          reject(new Error(`Server start timeout after ${maxAttempts} attempts`));
+        } else {
+          setTimeout(tryConnect, 50);
+        }
+      });
+      
+      socket.connect(port, '127.0.0.1');
     };
+    
     const onExit = (code) => {
       cleanup();
-      reject(new Error(`Server exited early with code ${code}${stderrBuf ? `\nStderr:\n${stderrBuf}` : ''}`));
+      reject(new Error(`Server exited early with code ${code}`));
     };
-    const onTimeout = () => {
-      cleanup();
-      reject(new Error(`Server start timeout${stderrBuf ? `\nStderr:\n${stderrBuf}` : ''}`));
-    };
+    
     const cleanup = () => {
-      child.stdout.off('data', onData);
       child.off('exit', onExit);
-      clearTimeout(t);
     };
 
     child.on('error', (e) => { cleanup(); reject(e); });
     child.on('exit', onExit);
-    child.stdout.on('data', onData);
-    const t = setTimeout(onTimeout, 15000);
+    
+    // Start trying to connect
+    setTimeout(tryConnect, 100); // Give the server a moment to start
   });
 
   return {

@@ -1,7 +1,6 @@
 import * as path from 'node:path';
 import { start } from 'warpsocket';
 
-// Simple performance test server bootstrap.
 // Usage: node dist/examples/performance/server/server.js --bind 0.0.0.0:3000 --threads <N>
 
 function arg(name: string, def?: string) {

@@ -15,6 +15,8 @@ declare module "warpsocket/addon-loader" {
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
     function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): void;
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
+    function createVirtualSocket(socketId: number): number;
+    function deleteVirtualSocket(virtualSocketId: number): boolean;
 }
 
 /**
@@ -222,3 +224,21 @@ export const copySubscriptions = addon.copySubscriptions;
  * @returns True if the channel has subscribers, false otherwise.
  */
 export const hasSubscriptions = addon.hasSubscriptions;
+
+/**
+ * Creates a virtual socket that points to an actual WebSocket connection.
+ * Virtual sockets can be subscribed to channels, and messages will be relayed to the underlying actual socket.
+ * This allows for convenient bulk unsubscription by deleting the virtual socket.
+ * Virtual sockets can also point to other virtual sockets, creating a chain that resolves to an actual socket.
+ * @param socketId - The identifier of the actual WebSocket connection or another virtual socket to point to.
+ * @returns The unique identifier of the newly created virtual socket, which can be used just like another socket.
+ */
+export const createVirtualSocket = addon.createVirtualSocket;
+
+/**
+ * Deletes a virtual socket and unsubscribes it from all channels.
+ * This is a convenient way to bulk-unsubscribe a virtual socket from all its channels at once.
+ * @param virtualSocketId - The unique identifier of the virtual socket to delete.
+ * @returns true if the virtual socket was deleted, false if it was not found.
+ */
+export const deleteVirtualSocket = addon.deleteVirtualSocket;

@@ -7,7 +7,6 @@ const threads = process.env.THREADS ? JSON.parse(process.env.THREADS) : undefine
 (async () => {
   try {
     await start({ bind: `127.0.0.1:${port}`, workerPath, threads });
-    console.log('READY');
   } catch (err) {
     console.error('Server failed to start:', err && err.stack || err);
     process.exit(1);

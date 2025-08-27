@@ -1,4 +1,4 @@
-const { subscribe, sendToChannel, setToken, send, hasSubscriptions } = require('warpsocket');
+const { subscribe, sendToChannel, setToken, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket } = require('warpsocket');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {
@@ -28,6 +28,17 @@ function handleTextMessage(data, socketId, currentToken) {
       break;
     case 'echoToken':
       send(socketId, JSON.stringify({ type: 'token', token: currentToken ? Buffer.from(currentToken).toString('utf8') : null }));
+      break;
+    case 'getSocketId':
+      send(socketId, JSON.stringify({ type: 'socketId', socketId: socketId }));
+      break;
+    case 'createVirtualSocket':
+      const virtualSocketId = createVirtualSocket(msg.targetSocketId);
+      send(socketId, JSON.stringify({ type: 'virtualSocketCreated', virtualSocketId: virtualSocketId }));
+      break;
+    case 'deleteVirtualSocket':
+      const success = deleteVirtualSocket(msg.virtualSocketId);
+      send(socketId, JSON.stringify({ type: 'virtualSocketDeleted', success: success }));
       break;
     case 'whoami':
       if (!globalThis.__workerId) {

@@ -235,6 +235,46 @@ Copies all subscribers from one channel to another channel.
 - `fromChannelName` - - The source channel name (Buffer, ArrayBuffer, or string).
 - `toChannelName` - - The destination channel name (Buffer, ArrayBuffer, or string).
 
+### hasSubscriptions · function
+
+Checks if a channel has any subscribers.
+
+**Signature:** `(channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
+
+**Parameters:**
+
+- `channelName` - - The name of the channel to check (Buffer, ArrayBuffer, or string).
+
+**Returns:** True if the channel has subscribers, false otherwise.
+
+### createVirtualSocket · function
+
+Creates a virtual socket that points to an actual WebSocket connection.
+Virtual sockets can be subscribed to channels, and messages will be relayed to the underlying actual socket.
+This allows for convenient bulk unsubscription by deleting the virtual socket.
+Virtual sockets can also point to other virtual sockets, creating a chain that resolves to an actual socket.
+
+**Signature:** `(socketId: number) => number`
+
+**Parameters:**
+
+- `socketId` - - The identifier of the actual WebSocket connection or another virtual socket to point to.
+
+**Returns:** The unique identifier of the newly created virtual socket, which can be used just like another socket.
+
+### deleteVirtualSocket · function
+
+Deletes a virtual socket and unsubscribes it from all channels.
+This is a convenient way to bulk-unsubscribe a virtual socket from all its channels at once.
+
+**Signature:** `(virtualSocketId: number) => boolean`
+
+**Parameters:**
+
+- `virtualSocketId` - - The unique identifier of the virtual socket to delete.
+
+**Returns:** true if the virtual socket was deleted, false if it was not found.
+
 ## Examples
 
 ### Chat Server

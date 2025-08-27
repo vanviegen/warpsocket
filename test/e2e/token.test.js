@@ -1,16 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const WebSocket = require('ws');
-const { spawnServer } = require('../helpers/spawnServer.js');
-
-const open = (ws) => new Promise((r, j) => { ws.once('open', r); ws.once('error', j); });
-const onceMessage = (ws) => new Promise((r) => ws.once('message', (m) => r(m.toString())));
+const { createWebSocket, onceMessage } = require('../helpers/testUtils.js');
 
 test('token is stored and echoed back', async () => {
-  const srv = await spawnServer();
-
-  const ws = new WebSocket(srv.url);
-  await open(ws);
+  const ws = await createWebSocket();
 
   ws.send(JSON.stringify({ type: 'auth', token: 'abc123' }));
   await onceMessage(ws); // authenticated ack
@@ -20,6 +13,4 @@ test('token is stored and echoed back', async () => {
 
   assert.equal(reply.type, 'token');
   assert.equal(reply.token, 'abc123');
-
-  ws.close(); srv.kill();
 });
