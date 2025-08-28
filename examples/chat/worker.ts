@@ -10,11 +10,7 @@ export function handleOpen(socketId: number, ip: string, headers: Record<string,
 
 function send(socketOrChannel: number | string, message: any) {
     const data = JSON.stringify(message);
-    if (typeof socketOrChannel === 'number') {
-        warpsocket.send(socketOrChannel, data);
-    } else {
-        warpsocket.sendToChannel(socketOrChannel, data);
-    }
+    warpsocket.send(socketOrChannel, data);
 }
 
 const messageHandlers: Record<string, (data: any, socketId: number, userInfo: any) => void> = {

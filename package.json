@@ -1,11 +1,13 @@
 {
   "name": "warpsocket",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
-    "build": "tsc && npm run build:native",
-    "build:native": "node ./build-addon.js",
-    "test": "npm run build && node --test --test-concurrency=1 test/e2e/*.test.js",
+    "build": "tsc && node ./build-addon.js",
+    "build:debug": "tsc && node ./build-addon.js --debug",
+    "test": "npm run build && npm run test:only",
+    "test:debug": "npm run build:debug && RUST_BACKTRACE=1 npm run test:only",
+    "test:only": "node --test --test-concurrency=1 test/e2e/*.test.js",
     "readme-tsdoc": "readme-tsdoc",
     "postinstall": "node ./build-addon.js --postinstall",
     "prepublishOnly": "node ./build-addon.js --prepublish && npm run readme-tsdoc"

@@ -40,7 +40,7 @@ Requirements:
 ### Basic Usage
 
 ```typescript
-import { start, sendToChannel, subscribe } from 'warpsocket';
+import { start, send, subscribe } from 'warpsocket';
 
 // Start the server and point it at your worker module (defaults to one worker thread per CPU core)
 start({ bind: '0.0.0.0:3000', workerPath: './my-worker.js' });
@@ -56,7 +56,7 @@ export function handleOpen(socketId, ip, headers) {
 
 export async function handleTextMessage(text, socketId, token) {
   subscribe(socketId, 'general');
-  sendToChannel('general', `User ${socketId}: ${text}`);
+  send('general', `User ${socketId}: ${text}`);
 }
 
 export async function handleTextMessage(data, socketId, token) {
@@ -167,39 +167,21 @@ This function is normally not needed, as worker threads can be automatically reg
 
 ### send · function
 
-Sends data to a specific WebSocket connection.
+Sends data to a specific WebSocket connection or broadcasts to all subscribers of a channel.
 
-**Signature:** `(socketId: number, data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => void`
+**Signature:** `(target: string | number | ArrayBuffer | Uint8Array<ArrayBufferLike>, data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
 
 **Parameters:**
 
-- `socketId` - - The unique identifier of the WebSocket connection.
+- `target` - - The target for the message: either a socket ID (number) or channel name (Buffer, ArrayBuffer, or string).
 - `data` - - The data to send (Buffer, ArrayBuffer, or string).
 
-### sendToChannel · function
+**Returns:** true if the message was sent successfully, false otherwise.
 
-Broadcasts data to all subscribers of a specific channel.
-
-**Signature:** `(channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, includeSocketId?: boolean) => void`
-
-**Parameters:**
-
-- `channelName` - - The name of the channel to broadcast to (Buffer, ArrayBuffer, or string).
-- `data` - - The data to broadcast (Buffer, ArrayBuffer, or string).
-- `includeSocketId` - - Whether to prefix the data with the (virtual) socket ID (default: false). 
-This can be useful for clients to identify the source of the message:
-- Within the initial request, a virtual socket is created and subscribed to one or multiple
-channels, and the virtual socket id is sent back to the client.
-- When data is sent to these types of channels, includeSocketId is set to true, such that the
-virtual socket id (different for each receiver) is included in the message.
-- The clients knows to associate the virtual socket id with a certain request.
-
-When data is a Buffer or ArrayBuffer, the virtual socket id is prefixed as a binary 64 bit
-unsigned integer in network order.
-When data is a string, we check if it starts with a '{' and ends with a '}', as a heuristic for
-checking this is a JSON object. If it's not, we throw an error.
-Otherwise, we add the virtual socket id as the `_vsi` property (which should not already exist).
-For example: `{"_vsi":12345,"your":"original","data":true}`.
+When target is a channel name and the channel has virtual socket subscribers with user data:
+- For text messages: adds the user data as the `_vsud` property to JSON objects.
+Example: `{"_vsud":12345,"your":"original","data":true}`.
+- For binary messages: prefixes the user data as a 32-bit integer in network byte order.
 
 ### subscribe · function
 
@@ -268,11 +250,15 @@ Virtual sockets can be subscribed to channels, and messages will be relayed to t
 This allows for convenient bulk unsubscription by deleting the virtual socket.
 Virtual sockets can also point to other virtual sockets, creating a chain that resolves to an actual socket.
 
-**Signature:** `(socketId: number) => number`
+**Signature:** `(socketId: number, userData?: number) => number`
 
 **Parameters:**
 
 - `socketId` - - The identifier of the actual WebSocket connection or another virtual socket to point to.
+- `userData` - - Optional user data (32-bit signed integer) that will be included in channel broadcasts to this virtual socket.
+When provided, this data will be included in messages sent to channels this virtual socket subscribes to.
+- Text messages will need to be JSON objects for this to work. They'll get a `_vsud` property added with the user data.
+- Binary messages will be prefixed with a i32 in network order.
 
 **Returns:** The unique identifier of the newly created virtual socket, which can be used just like another socket.
 
@@ -281,20 +267,22 @@ Virtual sockets can also point to other virtual sockets, creating a chain that r
 Deletes a virtual socket and unsubscribes it from all channels.
 This is a convenient way to bulk-unsubscribe a virtual socket from all its channels at once.
 
-**Signature:** `(virtualSocketId: number) => boolean`
+**Signature:** `(virtualSocketId: number, expectedTargetSocketId?: number) => boolean`
 
 **Parameters:**
 
 - `virtualSocketId` - - The unique identifier of the virtual socket to delete.
+- `expectedTargetSocketId` - - Optional. If provided, the virtual socket will only be deleted 
+if it points to this specific target socket ID. This can help prevent unauthorized unsubscribes.
 
-**Returns:** true if the virtual socket was deleted, false if it was not found.
+**Returns:** true if the virtual socket was deleted, false if it was not found or target didn't match.
 
 ## Examples
 
 ### Chat Server
 
 ```typescript
-import { start, sendToChannel, subscribe, unsubscribe } from 'warpsocket';
+import { start, send, subscribe, unsubscribe } from 'warpsocket';
 
 start({ bind: '0.0.0.0:3000', workerPath: './chat-worker.js' });
 ```
@@ -307,14 +295,14 @@ export function handleTextMessage(data, socketId) {
   switch (message.type) {
     case 'join':
       subscribe(socketId, message.room);
-      sendToChannel(message.room, JSON.stringify({ type: 'user-joined', userId: socketId, room: message.room }));
+      send(message.room, JSON.stringify({ type: 'user-joined', userId: socketId, room: message.room }));
       break;
     case 'leave':
       unsubscribe(socketId, message.room);
-      sendToChannel(message.room, JSON.stringify({ type: 'user-left', userId: socketId, room: message.room }));
+      send(message.room, JSON.stringify({ type: 'user-left', userId: socketId, room: message.room }));
       break;
     case 'message':
-      sendToChannel(message.room, JSON.stringify({ type: 'chat-message', userId: socketId, text: message.text, timestamp: Date.now() }));
+      send(message.room, JSON.stringify({ type: 'chat-message', userId: socketId, text: message.text, timestamp: Date.now() }));
       break;
   }
 };

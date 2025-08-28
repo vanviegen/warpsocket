@@ -1,4 +1,4 @@
-const { subscribe, sendToChannel, setToken, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket } = require('warpsocket');
+const { subscribe, setToken, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket } = require('warpsocket');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {
@@ -17,7 +17,7 @@ function handleTextMessage(data, socketId, currentToken) {
       break;
     case 'pub':
       const data = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data });
-      sendToChannel(msg.channel, data, msg.withSocketId || false);
+      send(msg.channel, data);
       break;
     case 'hasSubscriptions':
       const hasSubs = hasSubscriptions(msg.channel);
@@ -34,11 +34,11 @@ function handleTextMessage(data, socketId, currentToken) {
       send(socketId, JSON.stringify({ type: 'socketId', socketId: socketId }));
       break;
     case 'createVirtualSocket':
-      const virtualSocketId = createVirtualSocket(msg.targetSocketId || socketId);
+      const virtualSocketId = createVirtualSocket(msg.targetSocketId || socketId, msg.userData);
       send(socketId, JSON.stringify({ type: 'virtualSocketCreated', virtualSocketId: virtualSocketId }));
       break;
     case 'deleteVirtualSocket':
-      const success = deleteVirtualSocket(msg.virtualSocketId);
+      const success = deleteVirtualSocket(msg.virtualSocketId, msg.expectedTargetSocketId);
       send(socketId, JSON.stringify({ type: 'virtualSocketDeleted', success: success }));
       break;
     case 'whoami':

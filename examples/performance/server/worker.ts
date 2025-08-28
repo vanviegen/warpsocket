@@ -1,4 +1,4 @@
-import { send, sendToChannel, subscribe } from 'warpsocket';
+import { send, subscribe } from 'warpsocket';
 
 // Each worker uses a unique prefix so their channel namespaces don't collide
 // The native side runs N workers; we can't directly know the index here, so we
@@ -44,7 +44,7 @@ export function handleTextMessage(data: string, socketId: number) {
         const ch = msg.channel ?? `${prefix}-ch-${Math.floor(Math.random()*currentBucket)}`;
         // Broadcast a small payload
         const payload = JSON.stringify({ type: 'evt', t: 'This is a message to my dear clients' });
-        sendToChannel(ch, payload);
+        send(ch, payload);
         handledSinceLastTick++;
         // Acknowledge to requester
         send(socketId, JSON.stringify({ type: 'ack' }));

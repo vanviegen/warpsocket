@@ -8,15 +8,14 @@ import * as pathMod from 'node:path';
 declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
-    function send(socketId: number, data: Uint8Array | ArrayBuffer | string): void;
-    function sendToChannel(channelName: Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string, includeSocketId?: boolean): void;
+    function send(target: number | Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string): boolean;
     function subscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function unsubscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
     function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): void;
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
-    function createVirtualSocket(socketId: number): number;
-    function deleteVirtualSocket(virtualSocketId: number): boolean;
+    function createVirtualSocket(socketId: number, userData?: number): number;
+    function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
 }
 
 /**
@@ -175,32 +174,17 @@ async function spawnWorkers(workerModulePath: string, threads?: number): Promise
 export const registerWorkerThread = addon.registerWorkerThread;
 
 /** 
-* Sends data to a specific WebSocket connection.
-* @param socketId - The unique identifier of the WebSocket connection.
+* Sends data to a specific WebSocket connection or broadcasts to all subscribers of a channel.
+* @param target - The target for the message: either a socket ID (number) or channel name (Buffer, ArrayBuffer, or string).
 * @param data - The data to send (Buffer, ArrayBuffer, or string).
+* @returns true if the message was sent successfully, false otherwise.
+* 
+* When target is a channel name and the channel has virtual socket subscribers with user data:
+* - For text messages: adds the user data as the `_vsud` property to JSON objects.
+*   Example: `{"_vsud":12345,"your":"original","data":true}`.
+* - For binary messages: prefixes the user data as a 32-bit integer in network byte order.
 */
 export const send = addon.send;
-
-/** 
-* Broadcasts data to all subscribers of a specific channel.
-* @param channelName - The name of the channel to broadcast to (Buffer, ArrayBuffer, or string).
-* @param data - The data to broadcast (Buffer, ArrayBuffer, or string).
-* @param includeSocketId - Whether to prefix the data with the (virtual) socket ID (default: false). 
-*   This can be useful for clients to identify the source of the message:
-*   - Within the initial request, a virtual socket is created and subscribed to one or multiple
-*     channels, and the virtual socket id is sent back to the client.
-*   - When data is sent to these types of channels, includeSocketId is set to true, such that the
-*     virtual socket id (different for each receiver) is included in the message.
-*   - The clients knows to associate the virtual socket id with a certain request.
-* 
-*   When data is a Buffer or ArrayBuffer, the virtual socket id is prefixed as a binary 64 bit
-*   unsigned integer in network order.
-*   When data is a string, we check if it starts with a '{' and ends with a '}', as a heuristic for
-*   checking this is a JSON object. If it's not, we throw an error.
-*   Otherwise, we add the virtual socket id as the `_vsi` property (which should not already exist).
-*   For example: `{"_vsi":12345,"your":"original","data":true}`.
-*/
-export const sendToChannel = addon.sendToChannel;
 
 /** 
 * Subscribes a WebSocket connection to a channel.
@@ -245,6 +229,10 @@ export const hasSubscriptions = addon.hasSubscriptions;
  * This allows for convenient bulk unsubscription by deleting the virtual socket.
  * Virtual sockets can also point to other virtual sockets, creating a chain that resolves to an actual socket.
  * @param socketId - The identifier of the actual WebSocket connection or another virtual socket to point to.
+ * @param userData - Optional user data (32-bit signed integer) that will be included in channel broadcasts to this virtual socket.
+ *     When provided, this data will be included in messages sent to channels this virtual socket subscribes to.
+ *     - Text messages will need to be JSON objects for this to work. They'll get a `_vsud` property added with the user data.
+ *     - Binary messages will be prefixed with a i32 in network order.
  * @returns The unique identifier of the newly created virtual socket, which can be used just like another socket.
  */
 export const createVirtualSocket = addon.createVirtualSocket;
@@ -253,6 +241,8 @@ export const createVirtualSocket = addon.createVirtualSocket;
  * Deletes a virtual socket and unsubscribes it from all channels.
  * This is a convenient way to bulk-unsubscribe a virtual socket from all its channels at once.
  * @param virtualSocketId - The unique identifier of the virtual socket to delete.
- * @returns true if the virtual socket was deleted, false if it was not found.
+ * @param expectedTargetSocketId - Optional. If provided, the virtual socket will only be deleted 
+ *   if it points to this specific target socket ID. This can help prevent unauthorized unsubscribes.
+ * @returns true if the virtual socket was deleted, false if it was not found or target didn't match.
  */
 export const deleteVirtualSocket = addon.deleteVirtualSocket;
