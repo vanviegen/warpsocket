@@ -12,11 +12,12 @@ function handleTextMessage(data, socketId, currentToken) {
 
   switch (msg.type) {
     case 'sub':
-      subscribe(socketId, msg.channel);
+      subscribe(msg.socketId || socketId, msg.channel);
       send(socketId, JSON.stringify({ type: 'subscribed', channel: msg.channel }));
       break;
     case 'pub':
-      sendToChannel(msg.channel, JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data }));
+      const data = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data });
+      sendToChannel(msg.channel, data, msg.withSocketId || false);
       break;
     case 'hasSubscriptions':
       const hasSubs = hasSubscriptions(msg.channel);
@@ -33,7 +34,7 @@ function handleTextMessage(data, socketId, currentToken) {
       send(socketId, JSON.stringify({ type: 'socketId', socketId: socketId }));
       break;
     case 'createVirtualSocket':
-      const virtualSocketId = createVirtualSocket(msg.targetSocketId);
+      const virtualSocketId = createVirtualSocket(msg.targetSocketId || socketId);
       send(socketId, JSON.stringify({ type: 'virtualSocketCreated', virtualSocketId: virtualSocketId }));
       break;
     case 'deleteVirtualSocket':

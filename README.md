@@ -180,12 +180,26 @@ Sends data to a specific WebSocket connection.
 
 Broadcasts data to all subscribers of a specific channel.
 
-**Signature:** `(channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => void`
+**Signature:** `(channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, includeSocketId?: boolean) => void`
 
 **Parameters:**
 
 - `channelName` - - The name of the channel to broadcast to (Buffer, ArrayBuffer, or string).
 - `data` - - The data to broadcast (Buffer, ArrayBuffer, or string).
+- `includeSocketId` - - Whether to prefix the data with the (virtual) socket ID (default: false). 
+This can be useful for clients to identify the source of the message:
+- Within the initial request, a virtual socket is created and subscribed to one or multiple
+channels, and the virtual socket id is sent back to the client.
+- When data is sent to these types of channels, includeSocketId is set to true, such that the
+virtual socket id (different for each receiver) is included in the message.
+- The clients knows to associate the virtual socket id with a certain request.
+
+When data is a Buffer or ArrayBuffer, the virtual socket id is prefixed as a binary 64 bit
+unsigned integer in network order.
+When data is a string, we check if it starts with a '{' and ends with a '}', as a heuristic for
+checking this is a JSON object. If it's not, we throw an error.
+Otherwise, we add the virtual socket id as the `_vsi` property (which should not already exist).
+For example: `{"_vsi":12345,"your":"original","data":true}`.
 
 ### subscribe · function
 

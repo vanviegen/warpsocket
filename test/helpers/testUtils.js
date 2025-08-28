@@ -20,6 +20,7 @@ async function createWebSocket(url) {
   }
   
   const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
   await new Promise((resolve, reject) => { 
     ws.once('open', resolve); 
     ws.once('error', reject); 
@@ -63,10 +64,10 @@ test.afterEach(async () => {
 /**
  * Wait for the next message from a WebSocket
  * @param {WebSocket} ws - The WebSocket instance
- * @returns {Promise<string>} The message as a string
+ * @returns {Promise<string|Buffer>} The message as a string or binary data
  */
 const onceMessage = (ws) => new Promise((resolve) => 
-  ws.once('message', (m) => resolve(m.toString()))
+  ws.once('message', (m) => resolve(m))
 );
 
 /**

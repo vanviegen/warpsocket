@@ -38,7 +38,7 @@ lazy_static! {
 }
 
 // Atomic counter for generating unique socket IDs
-static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
+static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(1);
 // Atomic counter for generating unique worker thread IDs
 static WORKER_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Round-robin counter for worker selection
@@ -203,8 +203,29 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let arg0 = read_arg::<JsValue>(&mut cx, 0)?;
     let channel_name = js_value_to_bytes(&mut cx, arg0)?;
     let arg1 = read_arg::<JsValue>(&mut cx, 1)?;
-    let message = js_value_to_message(&mut cx, arg1)?;
-    
+    let mut message = js_value_to_message(&mut cx, arg1)?;
+    let include_socket_id = match cx.argument_opt(2) {
+        Some(val) => match val.downcast::<JsBoolean, _>(&mut cx) {
+            Ok(v) => v.value(&mut cx),
+            Err(_) => return cx.throw_type_error("Expected argument 3 to be a Boolean"),
+        },
+        None => false
+    };
+
+    if include_socket_id {
+        if let Message::Text(text) = &mut message {
+            if !text.starts_with('{') || !text.ends_with('}') {
+                return cx.throw_error("To attach the socket id to a text message, it must be a JSON object");
+            }
+            // Replace the opening '{' with either ',' or with nothing if the JSON object is empty
+            if text.find('"').is_some() {
+                text.replace_range(0..1, ",");
+            } else {
+                text.remove(0);
+            }
+        }
+    }
+
     if let Some(subscribers) = CHANNELS.get(&channel_name) {
         // Copy subscribers and release our lock synchronously
         let subscriber_ids: Vec<u64> = subscribers.iter().copied().collect();
@@ -213,8 +234,23 @@ fn send_to_channel(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         RUNTIME.block_on(async move {
             for socket_id in subscriber_ids {
                 with_socket!(socket_id, sender_mutex, _token => {
+                    let copy = if include_socket_id {
+                        match &message {
+                            // Text: assume JSON, add _vsi key
+                            Message::Text(text) => Message::Text(format!("{{\"_vsi\":{}{}", socket_id, text)),
+                            // Binary: prefix u64 bytes in network order
+                            Message::Binary(data) => {
+                                let mut prefixed = socket_id.to_be_bytes().to_vec();
+                                prefixed.extend_from_slice(data);
+                                Message::Binary(prefixed)
+                            }
+                            _ => message.clone(),
+                        }
+                    } else {
+                        message.clone()
+                    };
                     let mut sender = sender_mutex.lock().await;
-                    sender.send(message.clone()).await.unwrap_or_else(|e| println!("Send failed: {}", e));
+                    sender.send(copy).await.unwrap_or_else(|e| println!("Send failed: {}", e));
                 });
             }
         });
@@ -445,7 +481,7 @@ async fn handle_connection(stream: TcpStream) {
                     headers_obj.upcast(),
                 ]);
 
-                let should_accept= match result {
+                let should_accept = match result {
                     Some(value) => {
                         if let Ok(boolean) = value.downcast::<JsBoolean, _>(&mut cx) {
                             boolean.value(&mut cx)

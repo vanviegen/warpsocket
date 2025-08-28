@@ -9,7 +9,7 @@ declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
     function send(socketId: number, data: Uint8Array | ArrayBuffer | string): void;
-    function sendToChannel(channelName: Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string): void;
+    function sendToChannel(channelName: Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string, includeSocketId?: boolean): void;
     function subscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function unsubscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
@@ -185,6 +185,20 @@ export const send = addon.send;
 * Broadcasts data to all subscribers of a specific channel.
 * @param channelName - The name of the channel to broadcast to (Buffer, ArrayBuffer, or string).
 * @param data - The data to broadcast (Buffer, ArrayBuffer, or string).
+* @param includeSocketId - Whether to prefix the data with the (virtual) socket ID (default: false). 
+*   This can be useful for clients to identify the source of the message:
+*   - Within the initial request, a virtual socket is created and subscribed to one or multiple
+*     channels, and the virtual socket id is sent back to the client.
+*   - When data is sent to these types of channels, includeSocketId is set to true, such that the
+*     virtual socket id (different for each receiver) is included in the message.
+*   - The clients knows to associate the virtual socket id with a certain request.
+* 
+*   When data is a Buffer or ArrayBuffer, the virtual socket id is prefixed as a binary 64 bit
+*   unsigned integer in network order.
+*   When data is a string, we check if it starts with a '{' and ends with a '}', as a heuristic for
+*   checking this is a JSON object. If it's not, we throw an error.
+*   Otherwise, we add the virtual socket id as the `_vsi` property (which should not already exist).
+*   For example: `{"_vsi":12345,"your":"original","data":true}`.
 */
 export const sendToChannel = addon.sendToChannel;
 
