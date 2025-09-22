@@ -12,7 +12,7 @@ declare module "warpsocket/addon-loader" {
     function subscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function unsubscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
-    function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): void;
+    function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): boolean;
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
     function createVirtualSocket(socketId: number, userData?: number): number;
     function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
@@ -187,18 +187,18 @@ export const registerWorkerThread = addon.registerWorkerThread;
 export const send = addon.send;
 
 /** 
-* Subscribes a WebSocket connection to a channel.
+* Subscribes a WebSocket connection to a channel. Multiple subscriptions to the same channel by the same connection are allowed and are reference-counted - the connection will continue receiving messages until it has unsubscribed the same number of times.
 * @param socketId - The unique identifier of the WebSocket connection.
 * @param channelName - The name of the channel to subscribe to (Buffer, ArrayBuffer, or string).
-* @returns true if the subscription was added, false if already subscribed.
+* @returns true if this was a new subscription, false if the reference count was incremented.
 */
 export const subscribe = addon.subscribe;
 
 /** 
-* Unsubscribes a WebSocket connection from a channel.
+* Unsubscribes a WebSocket connection from a channel. Due to reference counting, the connection will only stop receiving messages from the channel after it has unsubscribed the same number of times it subscribed.
 * @param socketId - The unique identifier of the WebSocket connection.
 * @param channelName - The name of the channel to unsubscribe from (Buffer, ArrayBuffer, or string).
-* @returns true if the subscription was removed, false if not subscribed.
+* @returns true if the subscription was completely removed, false if the reference count was decremented or the socket was not subscribed.
 */
 export const unsubscribe = addon.unsubscribe;
 
@@ -210,9 +210,10 @@ export const unsubscribe = addon.unsubscribe;
 export const setToken = addon.setToken;
 
 /** 
-* Copies all subscribers from one channel to another channel.
+* Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber is already subscribed to the destination channel, their reference count will be incremented instead of creating duplicate subscriptions.
 * @param fromChannelName - The source channel name (Buffer, ArrayBuffer, or string).
 * @param toChannelName - The destination channel name (Buffer, ArrayBuffer, or string).
+* @returns true if any new subscriptions were added, false if all subscribers were already subscribed (reference counts incremented).
 */
 export const copySubscriptions = addon.copySubscriptions;
 

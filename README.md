@@ -185,7 +185,7 @@ Example: `{"_vsud":12345,"your":"original","data":true}`.
 
 ### subscribe · function
 
-Subscribes a WebSocket connection to a channel.
+Subscribes a WebSocket connection to a channel. Multiple subscriptions to the same channel by the same connection are allowed and are reference-counted - the connection will continue receiving messages until it has unsubscribed the same number of times.
 
 **Signature:** `(socketId: number, channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
 
@@ -194,11 +194,11 @@ Subscribes a WebSocket connection to a channel.
 - `socketId` - - The unique identifier of the WebSocket connection.
 - `channelName` - - The name of the channel to subscribe to (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if the subscription was added, false if already subscribed.
+**Returns:** true if this was a new subscription, false if the reference count was incremented.
 
 ### unsubscribe · function
 
-Unsubscribes a WebSocket connection from a channel.
+Unsubscribes a WebSocket connection from a channel. Due to reference counting, the connection will only stop receiving messages from the channel after it has unsubscribed the same number of times it subscribed.
 
 **Signature:** `(socketId: number, channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
 
@@ -207,7 +207,7 @@ Unsubscribes a WebSocket connection from a channel.
 - `socketId` - - The unique identifier of the WebSocket connection.
 - `channelName` - - The name of the channel to unsubscribe from (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if the subscription was removed, false if not subscribed.
+**Returns:** true if the subscription was completely removed, false if the reference count was decremented or the socket was not subscribed.
 
 ### setToken · function
 
@@ -222,14 +222,16 @@ Associates an authentication token with a WebSocket connection. It will be passe
 
 ### copySubscriptions · function
 
-Copies all subscribers from one channel to another channel.
+Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber is already subscribed to the destination channel, their reference count will be incremented instead of creating duplicate subscriptions.
 
-**Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => void`
+**Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
 
 **Parameters:**
 
 - `fromChannelName` - - The source channel name (Buffer, ArrayBuffer, or string).
 - `toChannelName` - - The destination channel name (Buffer, ArrayBuffer, or string).
+
+**Returns:** true if any new subscriptions were added, false if all subscribers were already subscribed (reference counts incremented).
 
 ### hasSubscriptions · function
 

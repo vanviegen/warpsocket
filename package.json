@@ -1,6 +1,6 @@
 {
   "name": "warpsocket",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
     "build": "tsc && node ./build-addon.js",

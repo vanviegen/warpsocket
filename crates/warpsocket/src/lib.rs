@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap};
 use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::time;
@@ -98,8 +98,8 @@ enum SocketEntry {
 }
 
 lazy_static! {
-    // Maps channel names to sets of socket IDs subscribed to each channel
-    static ref CHANNELS: DashMap<Vec<u8>, HashSet<u64>> = DashMap::new();
+    // Maps channel names subscribes socket ids and their refCounts (channelName: {socketId: refCount})
+    static ref CHANNELS: DashMap<Vec<u8>, HashMap<u64,u16>> = DashMap::new();
     // Maps socket IDs to their SocketEntry (actual or virtual)
     static ref SOCKETS: DashMap<u64, SocketEntry> = DashMap::new();
     // Maps worker thread IDs to their associated WorkerThread instances
@@ -245,7 +245,7 @@ fn send(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let channel_name = js_value_to_bytes(&mut cx, target)?;
     let result = if let Some(subscribers) = CHANNELS.get(&channel_name) {
         // Copy subscribers and release our lock synchronously
-        let subscriber_ids: Vec<u64> = subscribers.iter().copied().collect();
+        let subscriber_ids: Vec<u64> = subscribers.keys().copied().collect();
         drop(subscribers); // Just to be explicit
 
         RUNTIME.block_on(async move {
@@ -302,9 +302,14 @@ fn subscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let socket_id = read_arg!(&mut cx, 0, u64);
     let channel_name = read_arg!(&mut cx, 1, Bytes);
     
-    let was_inserted = CHANNELS.entry(channel_name).or_insert_with(HashSet::new).insert(socket_id);
-    
-    Ok(cx.boolean(was_inserted))
+    let mut channel = CHANNELS.entry(channel_name).or_insert_with(HashMap::new);
+    if let Some(entry) = channel.get_mut(&socket_id) {
+        *entry += 1;
+        Ok(cx.boolean(false))
+    } else {
+        channel.insert(socket_id, 1);
+        Ok(cx.boolean(true))
+    }
 }
 
 fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
@@ -312,7 +317,17 @@ fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let channel_name = read_arg!(&mut cx, 1, Bytes);
     
     let was_removed = if let Some(mut channel) = CHANNELS.get_mut(&channel_name) {
-        channel.remove(&socket_id)
+        if let Some(entry) = channel.get_mut(&socket_id) {
+            if *entry > 1 {
+                *entry -= 1;
+                false
+            } else {
+                channel.remove(&socket_id);
+                true
+            }
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -333,24 +348,31 @@ fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     return cx.throw_error("Socket not found");
 }
 
-fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let from_channel = read_arg!(&mut cx, 0, Bytes);
     let to_channel = read_arg!(&mut cx, 1, Bytes);
 
     // Create a local copy of subscribers to avoid holding read lock on from_channel
     // while acquiring write lock on to_channel, preventing deadlocks
     let subscribers: Vec<u64> = CHANNELS.get(&from_channel)
-    .map(|channel| channel.iter().copied().collect())
+    .map(|channel| channel.keys().copied().collect())
     .unwrap_or_default();
+
+    let mut new_inserts = false;
     
     if !subscribers.is_empty() {
-        let mut to = CHANNELS.entry(to_channel).or_insert_with(HashSet::new);
+        let mut to = CHANNELS.entry(to_channel).or_insert_with(HashMap::new);
         for subscriber_id in subscribers {
-            to.insert(subscriber_id);
+            if let Some(entry) = to.get_mut(&subscriber_id) {
+                *entry += 1;
+            } else {
+                to.insert(subscriber_id, 1);
+                new_inserts = true;
+            }
         }
     }
     
-    Ok(cx.undefined())
+    Ok(cx.boolean(new_inserts))
 }
 
 fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
@@ -359,7 +381,7 @@ fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     // Check if the channel exists
     let has_active = if let Some(channel) = CHANNELS.get(&channel_name) {
         // Check if any subscriber resolves to an actual active socket (short-circuits on first match)
-        channel.iter().any(|socket_id| get_socket(*socket_id).is_some())
+        channel.keys().any(|socket_id| get_socket(*socket_id).is_some())
     } else {
         false
     };
@@ -659,7 +681,7 @@ fn cleanup_disconnected_connections() {
 
     // Cleanup subscribers pointing at non-existent sockets and channels without subscribers
     CHANNELS.retain(|_key, subscribers| {
-        subscribers.retain(|socket_id| SOCKETS.contains_key(socket_id));
+        subscribers.retain(|socket_id, _ref_cnt| SOCKETS.contains_key(socket_id));
         !subscribers.is_empty()
     });
 }

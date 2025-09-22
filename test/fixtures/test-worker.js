@@ -1,4 +1,4 @@
-const { subscribe, setToken, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket } = require('warpsocket');
+const { subscribe, setToken, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket, unsubscribe, copySubscriptions } = require('warpsocket');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {
@@ -12,8 +12,16 @@ function handleTextMessage(data, socketId, currentToken) {
 
   switch (msg.type) {
     case 'sub':
-      subscribe(msg.socketId || socketId, msg.channel);
-      send(socketId, JSON.stringify({ type: 'subscribed', channel: msg.channel }));
+      const subResult = subscribe(msg.socketId || socketId, msg.channel);
+      send(socketId, JSON.stringify({ type: 'subscribed', channel: msg.channel, isNew: subResult }));
+      break;
+    case 'unsub':
+      const unsubResult = require('warpsocket').unsubscribe(msg.socketId || socketId, msg.channel);
+      send(socketId, JSON.stringify({ type: 'unsubscribed', channel: msg.channel, wasRemoved: unsubResult }));
+      break;
+    case 'copySubs':
+      const copyResult = require('warpsocket').copySubscriptions(msg.fromChannel, msg.toChannel);
+      send(socketId, JSON.stringify({ type: 'subsCopied', fromChannel: msg.fromChannel, toChannel: msg.toChannel, hadNewInserts: copyResult }));
       break;
     case 'pub':
       const data = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data });
