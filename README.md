@@ -167,21 +167,24 @@ This function is normally not needed, as worker threads can be automatically reg
 
 ### send · function
 
-Sends data to a specific WebSocket connection or broadcasts to all subscribers of a channel.
+Sends data to a specific WebSocket connection, multiple connections, or broadcasts to all subscribers of a channel.
 
-**Signature:** `(target: string | number | ArrayBuffer | Uint8Array<ArrayBufferLike>, data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
+**Signature:** `(target: string | number | ArrayBuffer | Uint8Array<ArrayBufferLike> | number[], data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
 
 **Parameters:**
 
-- `target` - - The target for the message: either a socket ID (number) or channel name (Buffer, ArrayBuffer, or string).
+- `target` - - The target for the message: either a socket ID (number), an array of socket IDs (number[]), or channel name (Buffer, ArrayBuffer, or string).
 - `data` - - The data to send (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if the message was sent successfully, false otherwise.
+**Returns:** true if the message was sent successfully to at least one recipient, false otherwise.
 
 When target is a channel name and the channel has virtual socket subscribers with user data:
 - For text messages: adds the user data as the `_vsud` property to JSON objects.
 Example: `{"_vsud":12345,"your":"original","data":true}`.
 - For binary messages: prefixes the user data as a 32-bit integer in network byte order.
+
+When target is an array of socket IDs, the message is sent to each socket in the array.
+Virtual socket user data is also handled for array targets.
 
 ### subscribe · function
 
@@ -224,14 +227,14 @@ Associates an authentication token with a WebSocket connection. It will be passe
 
 Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber is already subscribed to the destination channel, their reference count will be incremented instead of creating duplicate subscriptions.
 
-**Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
+**Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => number[]`
 
 **Parameters:**
 
 - `fromChannelName` - - The source channel name (Buffer, ArrayBuffer, or string).
 - `toChannelName` - - The destination channel name (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if any new subscriptions were added, false if all subscribers were already subscribed (reference counts incremented).
+**Returns:** An array of socket IDs that were newly added to the destination channel. Sockets that were already subscribed (and had their reference count incremented) are not included.
 
 ### hasSubscriptions · function
 

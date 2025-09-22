@@ -171,6 +171,51 @@ fn get_socket(socket_id: u64) -> Option<SocketRef<'static>> {
     }
 }
 
+// Helper function to send a message to a single socket, handling user data attachment
+async fn send_to_socket(socket_id: u64, message: &Message) -> bool {
+    if let Some(s) = get_socket(socket_id) {
+        let final_message = if let Some(user_data) = s.user_data {
+            // Include user data
+            match message {
+                // Text: assume JSON, add _vsud key
+                Message::Text(text) => {
+                    if !text.starts_with('{') || !text.ends_with('}') {
+                        eprintln!(
+                            "To attach the socket id to a text message, it must be a JSON object, not: {}",
+                            text
+                        );
+                    }
+                    if text.find('"').is_some() {
+                        Message::Text(format!("{{\"_vsud\":{},{}", user_data, &text[1..]))
+                    } else {
+                        // Empty JSON object
+                        Message::Text(format!("{{\"_vsud\":{}}}", user_data))
+                    }
+                }
+                // Binary: prefix i32 bytes in network order
+                Message::Binary(data) => {
+                    let mut prefixed = user_data.to_be_bytes().to_vec();
+                    prefixed.extend_from_slice(data);
+                    Message::Binary(prefixed)
+                }
+                _ => message.clone(),
+            }
+        } else {
+            message.clone()
+        };
+        
+        let mut sender = s.sender_mutex.lock().await;
+        if let Err(e) = sender.send(final_message).await {
+            println!("Send failed: {}", e);
+            false
+        } else {
+            true
+        }
+    } else {
+        false
+    }
+}
+
 fn start(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let bind_str = read_arg!(&mut cx, 0, String);
 
@@ -227,18 +272,38 @@ fn send(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     if let Ok(num) = target.downcast::<JsNumber, _>(&mut cx) {
         // Send to a single socket
         let socket_id = num.value(&mut cx) as u64;
-        if let Some(s) = get_socket(socket_id) {
-            RUNTIME.block_on(async move {
-                let mut sender = s.sender_mutex.lock().await;
-                sender
-                    .send(message)
-                    .await
-                    .unwrap_or_else(|e| println!("Send failed: {}", e));
-            });
-            return Ok(cx.boolean(true));
-        } else {
-            return Ok(cx.boolean(false));
+        let result = RUNTIME.block_on(send_to_socket(socket_id, &message));
+        return Ok(cx.boolean(result));
+    }
+
+    if let Ok(array) = target.downcast::<JsArray, _>(&mut cx) {
+        // Send to an array of socket IDs
+        let len = array.len(&mut cx) as usize;
+        let mut socket_ids = Vec::with_capacity(len);
+        
+        // Extract all socket IDs first (must be done synchronously with cx)
+        for i in 0..len {
+            if let Ok(element) = array.get::<JsValue, _, _>(&mut cx, i as u32) {
+                if let Ok(num) = element.downcast::<JsNumber, _>(&mut cx) {
+                    socket_ids.push(num.value(&mut cx) as u64);
+                } else {
+                    return cx.throw_type_error("Array elements must be numbers (socket IDs)");
+                }
+            }
         }
+
+        // Now send to all sockets asynchronously
+        let result = RUNTIME.block_on(async move {
+            let mut any_sent = false;
+            for socket_id in socket_ids {
+                if send_to_socket(socket_id, &message).await {
+                    any_sent = true;
+                }
+            }
+            any_sent
+        });
+        
+        return Ok(cx.boolean(result));
     }
     
     // Send to a channel
@@ -251,42 +316,8 @@ fn send(mut cx: FunctionContext) -> JsResult<JsBoolean> {
         RUNTIME.block_on(async move {
             let mut any_sent = false;
             for socket_id in subscriber_ids {
-                if let Some(s) = get_socket(socket_id) {
-                    let copy = if let Some(user_data) = s.user_data {
-                        // Include user data
-                        match &message {
-                            // Text: assume JSON, add _vsud key
-                            Message::Text(text) => {
-                                if !text.starts_with('{') || !text.ends_with('}') {
-                                    eprintln!(
-                                        "To attach the socket id to a text message, it must be a JSON object, not: {}",
-                                        text
-                                    );
-                                }
-                                if text.find('"').is_some() {
-                                    Message::Text(format!("{{\"_vsud\":{},{}", user_data, &text[1..]))
-                                } else {
-                                    // Empty JSON object
-                                    Message::Text(format!("{{\"_vsud\":{}}}", user_data))
-                                }
-                            }
-                            // Binary: prefix i32 bytes in network order
-                            Message::Binary(data) => {
-                                let mut prefixed = user_data.to_be_bytes().to_vec();
-                                prefixed.extend_from_slice(data);
-                                Message::Binary(prefixed)
-                            }
-                            _ => message.clone(),
-                        }
-                    } else {
-                        message.clone()
-                    };
-                    let mut sender = s.sender_mutex.lock().await;
-                    if let Err(e) = sender.send(copy).await {
-                        println!("Send failed: {}", e);
-                    } else {
-                        any_sent = true;
-                    }
+                if send_to_socket(socket_id, &message).await {
+                    any_sent = true;
                 }
             }
             any_sent
@@ -348,7 +379,7 @@ fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     return cx.throw_error("Socket not found");
 }
 
-fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsArray> {
     let from_channel = read_arg!(&mut cx, 0, Bytes);
     let to_channel = read_arg!(&mut cx, 1, Bytes);
 
@@ -358,7 +389,7 @@ fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     .map(|channel| channel.keys().copied().collect())
     .unwrap_or_default();
 
-    let mut new_inserts = false;
+    let mut new_socket_ids = Vec::new();
     
     if !subscribers.is_empty() {
         let mut to = CHANNELS.entry(to_channel).or_insert_with(HashMap::new);
@@ -367,12 +398,19 @@ fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsBoolean> {
                 *entry += 1;
             } else {
                 to.insert(subscriber_id, 1);
-                new_inserts = true;
+                new_socket_ids.push(subscriber_id);
             }
         }
     }
     
-    Ok(cx.boolean(new_inserts))
+    // Convert Vec<u64> to JsArray
+    let js_array = cx.empty_array();
+    for (i, socket_id) in new_socket_ids.iter().enumerate() {
+        let js_number = cx.number(*socket_id as f64);
+        js_array.set(&mut cx, i as u32, js_number)?;
+    }
+    
+    Ok(js_array)
 }
 
 fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {

@@ -157,7 +157,7 @@ test('unsubscribe decrements reference count and removes only when count reaches
   assert.equal(parsed.result, true);
 });
 
-test('copySubscriptions increments reference counts', async () => {
+test('copySubscriptions increments reference counts and returns new socket IDs', async () => {
   const a = await createWebSocket();
   const b = await createWebSocket();
 
@@ -178,14 +178,15 @@ test('copySubscriptions increments reference counts', async () => {
   assert.equal(parsed.type, 'subsCopied');
   assert.equal(parsed.fromChannel, 'channel1');
   assert.equal(parsed.toChannel, 'channel2');
-  assert.equal(parsed.hadNewInserts, true); // Should have new inserts
+  assert(Array.isArray(parsed.newSocketIds));
+  assert.equal(parsed.newSocketIds.length, 2); // Should contain both a and b's socket IDs
 
-  // Copy again - should not have new inserts since ref counts will be incremented
+  // Copy again - should not have new socket IDs since ref counts will be incremented
   a.send(JSON.stringify({ type: 'copySubs', fromChannel: 'channel1', toChannel: 'channel2' }));
   msg = await onceMessage(a);
   parsed = JSON.parse(msg);
   assert.equal(parsed.type, 'subsCopied');
-  assert.equal(parsed.hadNewInserts, false); // No new inserts, just ref count increases
+  assert.equal(parsed.newSocketIds.length, 0); // No new socket IDs, just ref count increases
 
   // Publish to channel2 - both a and b should receive (a once, b once despite double subscription)
   const receivedA = onceMessageOfType(a, 'published');
@@ -196,4 +197,50 @@ test('copySubscriptions increments reference counts', async () => {
   const msgB = await receivedB;
   assert.equal(msgA.data, 'copied-test');
   assert.equal(msgB.data, 'copied-test');
+});
+
+test('send to array of socket IDs', async () => {
+  const a = await createWebSocket();
+  const b = await createWebSocket();
+  const c = await createWebSocket();
+
+  // Get socket IDs
+  a.send(JSON.stringify({ type: 'getSocketId' }));
+  b.send(JSON.stringify({ type: 'getSocketId' }));
+  c.send(JSON.stringify({ type: 'getSocketId' }));
+
+  const socketIdMsgA = await onceMessage(a);
+  const socketIdMsgB = await onceMessage(b);
+  const socketIdMsgC = await onceMessage(c);
+
+  const socketIdA = JSON.parse(socketIdMsgA).socketId;
+  const socketIdB = JSON.parse(socketIdMsgB).socketId;
+  const socketIdC = JSON.parse(socketIdMsgC).socketId;
+
+  // Send message to sockets A and C via array (skipping B)
+  const receivedA = onceMessageOfType(a, 'directMessage');
+  const receivedC = onceMessageOfType(c, 'directMessage');
+  
+  a.send(JSON.stringify({
+    type: 'sendToSockets',
+    socketIds: [socketIdA, socketIdC],
+    data: 'array-message'
+  }));
+
+  // A and C should receive the message
+  const msgA = await receivedA;
+  const msgC = await receivedC;
+  assert.equal(msgA.data, 'array-message');
+  assert.equal(msgC.data, 'array-message');
+
+  // B should not receive anything (we'll test by trying to get a message with short timeout)
+  let bReceivedMessage = false;
+  const bReceivePromise = onceMessageOfType(b, 'directMessage', 100).then(() => {
+    bReceivedMessage = true;
+  }).catch(() => {
+    // Expected - B should not receive the message
+  });
+
+  await bReceivePromise;
+  assert.equal(bReceivedMessage, false, 'Socket B should not have received the array message');
 });

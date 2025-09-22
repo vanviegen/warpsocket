@@ -21,7 +21,7 @@ function handleTextMessage(data, socketId, currentToken) {
       break;
     case 'copySubs':
       const copyResult = require('warpsocket').copySubscriptions(msg.fromChannel, msg.toChannel);
-      send(socketId, JSON.stringify({ type: 'subsCopied', fromChannel: msg.fromChannel, toChannel: msg.toChannel, hadNewInserts: copyResult }));
+      send(socketId, JSON.stringify({ type: 'subsCopied', fromChannel: msg.fromChannel, toChannel: msg.toChannel, newSocketIds: copyResult }));
       break;
     case 'pub':
       const data = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data });
@@ -48,6 +48,11 @@ function handleTextMessage(data, socketId, currentToken) {
     case 'deleteVirtualSocket':
       const success = deleteVirtualSocket(msg.virtualSocketId, msg.expectedTargetSocketId);
       send(socketId, JSON.stringify({ type: 'virtualSocketDeleted', success: success }));
+      break;
+    case 'sendToSockets':
+      const socketIds = msg.socketIds;
+      const messageData = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'directMessage', data: msg.data });
+      send(socketIds, messageData);
       break;
     case 'whoami':
       if (!globalThis.__workerId) {

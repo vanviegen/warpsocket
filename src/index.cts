@@ -8,11 +8,11 @@ import * as pathMod from 'node:path';
 declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
-    function send(target: number | Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string): boolean;
+    function send(target: number | number[] | Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string): boolean;
     function subscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function unsubscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
-    function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): boolean;
+    function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): number[];
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
     function createVirtualSocket(socketId: number, userData?: number): number;
     function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
@@ -174,15 +174,18 @@ async function spawnWorkers(workerModulePath: string, threads?: number): Promise
 export const registerWorkerThread = addon.registerWorkerThread;
 
 /** 
-* Sends data to a specific WebSocket connection or broadcasts to all subscribers of a channel.
-* @param target - The target for the message: either a socket ID (number) or channel name (Buffer, ArrayBuffer, or string).
+* Sends data to a specific WebSocket connection, multiple connections, or broadcasts to all subscribers of a channel.
+* @param target - The target for the message: either a socket ID (number), an array of socket IDs (number[]), or channel name (Buffer, ArrayBuffer, or string).
 * @param data - The data to send (Buffer, ArrayBuffer, or string).
-* @returns true if the message was sent successfully, false otherwise.
+* @returns true if the message was sent successfully to at least one recipient, false otherwise.
 * 
 * When target is a channel name and the channel has virtual socket subscribers with user data:
 * - For text messages: adds the user data as the `_vsud` property to JSON objects.
 *   Example: `{"_vsud":12345,"your":"original","data":true}`.
 * - For binary messages: prefixes the user data as a 32-bit integer in network byte order.
+* 
+* When target is an array of socket IDs, the message is sent to each socket in the array.
+* Virtual socket user data is also handled for array targets.
 */
 export const send = addon.send;
 
@@ -213,7 +216,7 @@ export const setToken = addon.setToken;
 * Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber is already subscribed to the destination channel, their reference count will be incremented instead of creating duplicate subscriptions.
 * @param fromChannelName - The source channel name (Buffer, ArrayBuffer, or string).
 * @param toChannelName - The destination channel name (Buffer, ArrayBuffer, or string).
-* @returns true if any new subscriptions were added, false if all subscribers were already subscribed (reference counts incremented).
+* @returns An array of socket IDs that were newly added to the destination channel. Sockets that were already subscribed (and had their reference count incremented) are not included.
 */
 export const copySubscriptions = addon.copySubscriptions;
 
