@@ -8,11 +8,9 @@ import * as pathMod from 'node:path';
 declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): void;
-    function send(target: number | number[] | Uint8Array | ArrayBuffer | string, data: Uint8Array | ArrayBuffer | string): boolean;
-    function subscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
-    function unsubscribe(socketId: number, channelName: Uint8Array | ArrayBuffer | string): boolean;
+    function send(target: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], data: Uint8Array | ArrayBuffer | string): number;
+    function subscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta?: number): number[];
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
-    function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): number[];
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
     function createVirtualSocket(socketId: number, userData?: number): number;
     function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
@@ -175,35 +173,61 @@ export const registerWorkerThread = addon.registerWorkerThread;
 
 /** 
 * Sends data to a specific WebSocket connection, multiple connections, or broadcasts to all subscribers of a channel.
-* @param target - The target for the message: either a socket ID (number), an array of socket IDs (number[]), or channel name (Buffer, ArrayBuffer, or string).
+* @param target - The target for the message: 
+*   - A socket ID (number): sends to that specific socket
+*   - A channel name (Buffer, ArrayBuffer, or string): broadcasts to all subscribers of that channel
+*   - An array of socket IDs and/or channel names: sends to each socket and broadcasts to each channel
 * @param data - The data to send (Buffer, ArrayBuffer, or string).
-* @returns true if the message was sent successfully to at least one recipient, false otherwise.
-* 
-* When target is a channel name and the channel has virtual socket subscribers with user data:
+* @returns the number of recipients that got sent the message.
+*
+* When target is a virtual socket with user data (or a channel that has such a subscriber):
 * - For text messages: adds the user data as the `_vsud` property to JSON objects.
 *   Example: `{"_vsud":12345,"your":"original","data":true}`.
 * - For binary messages: prefixes the user data as a 32-bit integer in network byte order.
 * 
-* When target is an array of socket IDs, the message is sent to each socket in the array.
-* Virtual socket user data is also handled for array targets.
+* When target is an array, the message is sent to each target in the array.
 */
 export const send = addon.send;
 
 /** 
-* Subscribes a WebSocket connection to a channel. Multiple subscriptions to the same channel by the same connection are allowed and are reference-counted - the connection will continue receiving messages until it has unsubscribed the same number of times.
-* @param socketId - The unique identifier of the WebSocket connection.
-* @param channelName - The name of the channel to subscribe to (Buffer, ArrayBuffer, or string).
-* @returns true if this was a new subscription, false if the reference count was incremented.
+* Subscribes one or more WebSocket connections to a channel, or copies subscriptions from one channel to another.
+* Multiple subscriptions to the same channel by the same connection are reference-counted.
+* 
+* @param socketIdOrChannelName - Can be:
+*   - A single socket ID (number): applies delta to that socket's subscription
+*   - An array of socket IDs (number[]): applies delta to all sockets' subscriptions
+*   - A channel name (Buffer/ArrayBuffer/string): applies delta to all subscribers of this source channel
+*   - An array mixing socket IDs and channel names: applies delta to sockets and source channel subscribers
+* @param channelName - The target channel name (Buffer, ArrayBuffer, or string).
+* @param delta - Optional. The amount to change the subscription count by (default: 1). 
+*   Positive values add subscriptions, negative values remove them. When the count reaches zero, the subscription is removed.
+* @returns An array of socket IDs that were affected by the operation:
+*   - For positive delta: socket IDs that became newly subscribed (reference count went from 0 to positive)
+*   - For negative delta: socket IDs that became completely unsubscribed (reference count reached 0)
 */
 export const subscribe = addon.subscribe;
 
 /** 
-* Unsubscribes a WebSocket connection from a channel. Due to reference counting, the connection will only stop receiving messages from the channel after it has unsubscribed the same number of times it subscribed.
-* @param socketId - The unique identifier of the WebSocket connection.
-* @param channelName - The name of the channel to unsubscribe from (Buffer, ArrayBuffer, or string).
-* @returns true if the subscription was completely removed, false if the reference count was decremented or the socket was not subscribed.
+* Exactly the same as {@link subscribe}, only with a negative delta (defaulting to 1, which means a single unsubscribe, or a subscribe with delta -1).
 */
-export const unsubscribe = addon.unsubscribe;
+export function unsubscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta: number = 1): number[] {
+    return addon.subscribe(socketIdOrChannelName, channelName, -delta);
+}
+
+/** 
+* @deprecated Use subscribe(fromChannelName, toChannelName) instead.
+* Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber 
+* is already subscribed to the destination channel, their reference count will be incremented instead 
+* of creating duplicate subscriptions.
+* @param fromChannelName - The source channel name (Buffer, ArrayBuffer, or string).
+* @param toChannelName - The destination channel name (Buffer, ArrayBuffer, or string).
+* @returns An array of socket IDs that were newly added to the destination channel. Sockets that were 
+*   already subscribed (and had their reference count incremented) are not included.
+*/
+export function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | string, toChannelName: Uint8Array | ArrayBuffer | string): number[] {
+    const result = addon.subscribe(fromChannelName, toChannelName);
+    return result as number[];
+}
 
 /** 
 * Associates an authentication token with a WebSocket connection. It will be passed along with all subsequent events for that connection.
@@ -211,14 +235,6 @@ export const unsubscribe = addon.unsubscribe;
 * @param token - The authentication token (Buffer, ArrayBuffer, or string). It will be converted to a (UTF-8 encoded) Uint8Array.
 */
 export const setToken = addon.setToken;
-
-/** 
-* Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber is already subscribed to the destination channel, their reference count will be incremented instead of creating duplicate subscriptions.
-* @param fromChannelName - The source channel name (Buffer, ArrayBuffer, or string).
-* @param toChannelName - The destination channel name (Buffer, ArrayBuffer, or string).
-* @returns An array of socket IDs that were newly added to the destination channel. Sockets that were already subscribed (and had their reference count incremented) are not included.
-*/
-export const copySubscriptions = addon.copySubscriptions;
 
 /**
  * Checks if a channel has any subscribers.

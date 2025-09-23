@@ -265,105 +265,160 @@ fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     Ok(cx.undefined())
 }
 
-fn send(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+fn send(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let target = read_arg!(&mut cx, 0, JsValue);
     let message = read_arg!(&mut cx, 1, Message);
 
-    if let Ok(num) = target.downcast::<JsNumber, _>(&mut cx) {
-        // Send to a single socket
-        let socket_id = num.value(&mut cx) as u64;
-        let result = RUNTIME.block_on(send_to_socket(socket_id, &message));
-        return Ok(cx.boolean(result));
-    }
-
+    // Extract all targets into vectors (must be done synchronously with cx)
+    let mut socket_targets = Vec::new();
+    let mut channel_targets = Vec::new();
+    
     if let Ok(array) = target.downcast::<JsArray, _>(&mut cx) {
-        // Send to an array of socket IDs
+        // Array of socket IDs or channel names
         let len = array.len(&mut cx) as usize;
-        let mut socket_ids = Vec::with_capacity(len);
-        
-        // Extract all socket IDs first (must be done synchronously with cx)
         for i in 0..len {
             if let Ok(element) = array.get::<JsValue, _, _>(&mut cx, i as u32) {
                 if let Ok(num) = element.downcast::<JsNumber, _>(&mut cx) {
-                    socket_ids.push(num.value(&mut cx) as u64);
+                    socket_targets.push(num.value(&mut cx) as u64);
+                } else if let Ok(channel_bytes) = js_value_to_bytes(&mut cx, element) {
+                    channel_targets.push(channel_bytes);
                 } else {
-                    return cx.throw_type_error("Array elements must be numbers (socket IDs)");
+                    return cx.throw_type_error("Array elements must be numbers (socket IDs) or channel names (Buffer/ArrayBuffer/String)");
                 }
             }
         }
+    } else if let Ok(num) = target.downcast::<JsNumber, _>(&mut cx) {
+        // Single socket ID
+        socket_targets.push(num.value(&mut cx) as u64);
+    } else if let Ok(channel_bytes) = js_value_to_bytes(&mut cx, target) {
+        // Single channel name
+        channel_targets.push(channel_bytes);
+    } else {
+        return cx.throw_type_error("Target must be a number (socket ID), channel name (Buffer/ArrayBuffer/String), or array of these");
+    }
 
-        // Now send to all sockets asynchronously
-        let result = RUNTIME.block_on(async move {
-            let mut any_sent = false;
-            for socket_id in socket_ids {
-                if send_to_socket(socket_id, &message).await {
-                    any_sent = true;
-                }
+    // Now send to all targets asynchronously (shared code)
+    let result = RUNTIME.block_on(async move {
+        let mut send_count = 0;
+
+        // Send to socket IDs
+        for socket_id in socket_targets {
+            if send_to_socket(socket_id, &message).await {
+                send_count += 1;
             }
-            any_sent
-        });
+        }
         
-        return Ok(cx.boolean(result));
-    }
-    
-    // Send to a channel
-    let channel_name = js_value_to_bytes(&mut cx, target)?;
-    let result = if let Some(subscribers) = CHANNELS.get(&channel_name) {
-        // Copy subscribers and release our lock synchronously
-        let subscriber_ids: Vec<u64> = subscribers.keys().copied().collect();
-        drop(subscribers); // Just to be explicit
-
-        RUNTIME.block_on(async move {
-            let mut any_sent = false;
-            for socket_id in subscriber_ids {
-                if send_to_socket(socket_id, &message).await {
-                    any_sent = true;
+        // Send to channels
+        for channel_name in channel_targets {
+            if let Some(subscribers) = CHANNELS.get(&channel_name) {
+                // Make a copy, as we don't want to hold the lock while sending messages
+                let subscriber_ids: Vec<u64> = subscribers.keys().copied().collect();
+                drop(subscribers); // Just to be sure
+                for socket_id in subscriber_ids {
+                    if send_to_socket(socket_id, &message).await {
+                        send_count += 1;
+                    }
                 }
             }
-            any_sent
-        })
-    } else {
-        false
-    };
+        }
+        send_count
+    });
     
-    Ok(cx.boolean(result))
+    Ok(cx.number(result as f64))
 }
 
-fn subscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let socket_id = read_arg!(&mut cx, 0, u64);
-    let channel_name = read_arg!(&mut cx, 1, Bytes);
+// Helper function to apply a subscription delta to a single socket-channel pair
+fn apply_subscription_delta(socket_id: u64, channel_name: &[u8], delta: i32) -> bool {
+    let mut channel = CHANNELS.entry(channel_name.to_vec()).or_insert_with(HashMap::new);
     
-    let mut channel = CHANNELS.entry(channel_name).or_insert_with(HashMap::new);
-    if let Some(entry) = channel.get_mut(&socket_id) {
-        *entry += 1;
-        Ok(cx.boolean(false))
-    } else {
-        channel.insert(socket_id, 1);
-        Ok(cx.boolean(true))
-    }
-}
-
-fn unsubscribe(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let socket_id = read_arg!(&mut cx, 0, u64);
-    let channel_name = read_arg!(&mut cx, 1, Bytes);
-    
-    let was_removed = if let Some(mut channel) = CHANNELS.get_mut(&channel_name) {
+    if delta > 0 {
+        // Adding subscriptions
         if let Some(entry) = channel.get_mut(&socket_id) {
-            if *entry > 1 {
-                *entry -= 1;
-                false
-            } else {
+            *entry = entry.saturating_add(delta as u16);
+            false // not new
+        } else {
+            channel.insert(socket_id, delta as u16);
+            true // new
+        }
+    } else {
+        // Removing subscriptions
+        if let Some(entry) = channel.get_mut(&socket_id) {
+            let new_count = entry.saturating_sub((-delta) as u16);
+            if new_count == 0 {
                 channel.remove(&socket_id);
-                true
+                true // was removed
+            } else {
+                *entry = new_count;
+                false // not removed
             }
         } else {
-            false
+            false // wasn't subscribed
+        }
+    }
+}
+
+// Helper function to copy subscriptions from one channel to another with delta, collecting new socket IDs
+fn copy_subscriptions_with_delta(from_channel: &[u8], to_channel: &[u8], delta: i32, new_socket_ids: &mut Vec<u64>) {
+    let subscribers: Vec<u64> = CHANNELS.get(from_channel)
+        .map(|channel| channel.keys().copied().collect())
+        .unwrap_or_default();
+
+    for subscriber_id in subscribers {
+        // Apply delta subscription for each subscriber
+        if apply_subscription_delta(subscriber_id, to_channel, delta) {
+            new_socket_ids.push(subscriber_id);
+        }
+    }
+}
+
+// Helper function to handle a single subscription target (socket ID or channel name)
+fn handle_subscription_target<'a>(cx: &mut FunctionContext<'a>, target: Handle<JsValue>, channel_name: &[u8], delta: i32, new_socket_ids: &mut Vec<u64>) -> NeonResult<()> {
+    if let Ok(num) = target.downcast::<JsNumber, _>(cx) {
+        // Socket ID
+        let socket_id = num.value(cx) as u64;
+        if apply_subscription_delta(socket_id, channel_name, delta) {
+            new_socket_ids.push(socket_id);
+        }
+        Ok(())
+    } else if let Ok(from_channel_bytes) = js_value_to_bytes(cx, target) {
+        // Channel name to copy from (supports both positive and negative delta)
+        copy_subscriptions_with_delta(&from_channel_bytes, channel_name, delta, new_socket_ids);
+        Ok(())
+    } else {
+        cx.throw_type_error("Target must be a number (socket ID) or channel name (Buffer/ArrayBuffer/String)")
+    }
+}
+
+fn subscribe(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let target = read_arg!(&mut cx, 0, JsValue);
+    let channel_name = read_arg!(&mut cx, 1, Bytes);
+    let delta: i32 = read_arg_opt!(&mut cx, 2, i32).unwrap_or(1);
+    
+    let mut new_socket_ids = Vec::new();
+    
+    if let Ok(array) = target.downcast::<JsArray, _>(&mut cx) {
+        // Array of socket IDs or channel names
+        let len = array.len(&mut cx) as usize;
+        
+        for i in 0..len {
+            if let Ok(element) = array.get::<JsValue, _, _>(&mut cx, i as u32) {
+                handle_subscription_target(&mut cx, element, &channel_name, delta, &mut new_socket_ids)?;
+            } else {
+                return cx.throw_type_error("Invalid array element");
+            }
         }
     } else {
-        false
-    };
+        // Single target (socket ID or channel name)
+        handle_subscription_target(&mut cx, target, &channel_name, delta, &mut new_socket_ids)?;
+    }
     
-    Ok(cx.boolean(was_removed))
+    // Return array of newly subscribed socket IDs
+    let js_array = cx.empty_array();
+    for (i, socket_id) in new_socket_ids.iter().enumerate() {
+        let js_number = cx.number(*socket_id as f64);
+        js_array.set(&mut cx, i as u32, js_number)?;
+    }
+    Ok(js_array)
 }
 
 fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
@@ -377,40 +432,6 @@ fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         }
     }
     return cx.throw_error("Socket not found");
-}
-
-fn copy_subscriptions(mut cx: FunctionContext) -> JsResult<JsArray> {
-    let from_channel = read_arg!(&mut cx, 0, Bytes);
-    let to_channel = read_arg!(&mut cx, 1, Bytes);
-
-    // Create a local copy of subscribers to avoid holding read lock on from_channel
-    // while acquiring write lock on to_channel, preventing deadlocks
-    let subscribers: Vec<u64> = CHANNELS.get(&from_channel)
-    .map(|channel| channel.keys().copied().collect())
-    .unwrap_or_default();
-
-    let mut new_socket_ids = Vec::new();
-    
-    if !subscribers.is_empty() {
-        let mut to = CHANNELS.entry(to_channel).or_insert_with(HashMap::new);
-        for subscriber_id in subscribers {
-            if let Some(entry) = to.get_mut(&subscriber_id) {
-                *entry += 1;
-            } else {
-                to.insert(subscriber_id, 1);
-                new_socket_ids.push(subscriber_id);
-            }
-        }
-    }
-    
-    // Convert Vec<u64> to JsArray
-    let js_array = cx.empty_array();
-    for (i, socket_id) in new_socket_ids.iter().enumerate() {
-        let js_number = cx.number(*socket_id as f64);
-        js_array.set(&mut cx, i as u32, js_number)?;
-    }
-    
-    Ok(js_array)
 }
 
 fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
@@ -730,9 +751,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("registerWorkerThread", register_worker_thread)?;
     cx.export_function("send", send)?;
     cx.export_function("subscribe", subscribe)?;
-    cx.export_function("unsubscribe", unsubscribe)?;
     cx.export_function("setToken", set_token)?;
-    cx.export_function("copySubscriptions", copy_subscriptions)?;
     cx.export_function("hasSubscriptions", has_subscription)?;
     cx.export_function("createVirtualSocket", create_virtual_socket)?;
     cx.export_function("deleteVirtualSocket", delete_virtual_socket)?;

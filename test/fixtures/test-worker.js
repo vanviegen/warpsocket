@@ -13,19 +13,38 @@ function handleTextMessage(data, socketId, currentToken) {
   switch (msg.type) {
     case 'sub':
       const subResult = subscribe(msg.socketId || socketId, msg.channel);
-      send(socketId, JSON.stringify({ type: 'subscribed', channel: msg.channel, isNew: subResult }));
+      // subResult is now an array of newly subscribed socket IDs
+      const isNew = subResult.includes(msg.socketId || socketId);
+      send(socketId, JSON.stringify({ type: 'subscribed', channel: msg.channel, isNew: isNew }));
+      break;
+    case 'subArray':
+      const subArrayResult = subscribe(msg.socketIds, msg.channel);
+      // subArrayResult is now an array of newly subscribed socket IDs
+      // Convert to array of booleans indicating if each socket was newly subscribed
+      const results = msg.socketIds.map(socketId => subArrayResult.includes(socketId));
+      send(socketId, JSON.stringify({ type: 'subscribedArray', channel: msg.channel, results: results }));
       break;
     case 'unsub':
       const unsubResult = require('warpsocket').unsubscribe(msg.socketId || socketId, msg.channel);
-      send(socketId, JSON.stringify({ type: 'unsubscribed', channel: msg.channel, wasRemoved: unsubResult }));
+      // unsubResult is now an array of newly unsubscribed socket IDs
+      const wasRemoved = unsubResult.includes(msg.socketId || socketId);
+      send(socketId, JSON.stringify({ type: 'unsubscribed', channel: msg.channel, wasRemoved: wasRemoved }));
       break;
     case 'copySubs':
       const copyResult = require('warpsocket').copySubscriptions(msg.fromChannel, msg.toChannel);
       send(socketId, JSON.stringify({ type: 'subsCopied', fromChannel: msg.fromChannel, toChannel: msg.toChannel, newSocketIds: copyResult }));
       break;
+    case 'unsubFromChannel':
+      // Unsubscribe all subscribers of fromChannel from toChannel using negative delta
+      const unsubFromChannelResult = subscribe(msg.fromChannel, msg.toChannel, -(msg.delta || 1));
+      send(socketId, JSON.stringify({ type: 'unsubscribedFromChannel', fromChannel: msg.fromChannel, toChannel: msg.toChannel, removedSocketIds: unsubFromChannelResult }));
+      break;
     case 'pub':
       const data = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'published', channel: msg.channel, data: msg.data });
-      send(msg.channel, data);
+      const pubSendCount = send(msg.channel, data);
+      if (msg.returnCount) {
+        send(socketId, JSON.stringify({ type: 'publishResult', count: pubSendCount }));
+      }
       break;
     case 'hasSubscriptions':
       const hasSubs = hasSubscriptions(msg.channel);
@@ -52,7 +71,8 @@ function handleTextMessage(data, socketId, currentToken) {
     case 'sendToSockets':
       const socketIds = msg.socketIds;
       const messageData = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'directMessage', data: msg.data });
-      send(socketIds, messageData);
+      const sendCount = send(socketIds, messageData);
+      send(socketId, JSON.stringify({ type: 'sendResult', count: sendCount }));
       break;
     case 'whoami':
       if (!globalThis.__workerId) {

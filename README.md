@@ -125,6 +125,30 @@ address. The Promise rejects if worker initialization fails.
 
 - If `options` is missing or `options.bind` is not a string.
 
+### unsubscribe · function
+
+[object Object],[object Object],[object Object]
+
+**Signature:** `(socketIdOrChannelName: string | number | number[] | ArrayBuffer | Uint8Array<ArrayBufferLike> | (string | number | ArrayBuffer | Uint8Array<ArrayBufferLike>)[], channelName: string | ... 1 more ... | Uint8Array<...>, delta?: number) => number[]`
+
+**Parameters:**
+
+- `socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[]`
+- `channelName: Uint8Array | ArrayBuffer | string`
+- `delta: number` (optional)
+
+### copySubscriptions · function
+
+**Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => number[]`
+
+**Parameters:**
+
+- `fromChannelName: Uint8Array | ArrayBuffer | string` - - The source channel name (Buffer, ArrayBuffer, or string).
+- `toChannelName: Uint8Array | ArrayBuffer | string` - - The destination channel name (Buffer, ArrayBuffer, or string).
+
+**Returns:** An array of socket IDs that were newly added to the destination channel. Sockets that were 
+already subscribed (and had their reference count incremented) are not included.
+
 ### WorkerInterface · interface
 
 Interface that worker threads must implement to handle WebSocket events.
@@ -169,48 +193,46 @@ This function is normally not needed, as worker threads can be automatically reg
 
 Sends data to a specific WebSocket connection, multiple connections, or broadcasts to all subscribers of a channel.
 
-**Signature:** `(target: string | number | ArrayBuffer | Uint8Array<ArrayBufferLike> | number[], data: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
+**Signature:** `(target: string | number | number[] | ArrayBuffer | Uint8Array<ArrayBufferLike> | (string | number | ArrayBuffer | Uint8Array<ArrayBufferLike>)[], data: string | ... 1 more ... | Uint8Array<...>) => number`
 
 **Parameters:**
 
-- `target` - - The target for the message: either a socket ID (number), an array of socket IDs (number[]), or channel name (Buffer, ArrayBuffer, or string).
+- `target` - - The target for the message: 
+- A socket ID (number): sends to that specific socket
+- A channel name (Buffer, ArrayBuffer, or string): broadcasts to all subscribers of that channel
+- An array of socket IDs and/or channel names: sends to each socket and broadcasts to each channel
 - `data` - - The data to send (Buffer, ArrayBuffer, or string).
 
-**Returns:** true if the message was sent successfully to at least one recipient, false otherwise.
+**Returns:** the number of recipients that got sent the message.
 
-When target is a channel name and the channel has virtual socket subscribers with user data:
+When target is a virtual socket with user data (or a channel that has such a subscriber):
 - For text messages: adds the user data as the `_vsud` property to JSON objects.
 Example: `{"_vsud":12345,"your":"original","data":true}`.
 - For binary messages: prefixes the user data as a 32-bit integer in network byte order.
 
-When target is an array of socket IDs, the message is sent to each socket in the array.
-Virtual socket user data is also handled for array targets.
+When target is an array, the message is sent to each target in the array.
 
 ### subscribe · function
 
-Subscribes a WebSocket connection to a channel. Multiple subscriptions to the same channel by the same connection are allowed and are reference-counted - the connection will continue receiving messages until it has unsubscribed the same number of times.
+Subscribes one or more WebSocket connections to a channel, or copies subscriptions from one channel to another.
+Multiple subscriptions to the same channel by the same connection are reference-counted.
 
-**Signature:** `(socketId: number, channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
-
-**Parameters:**
-
-- `socketId` - - The unique identifier of the WebSocket connection.
-- `channelName` - - The name of the channel to subscribe to (Buffer, ArrayBuffer, or string).
-
-**Returns:** true if this was a new subscription, false if the reference count was incremented.
-
-### unsubscribe · function
-
-Unsubscribes a WebSocket connection from a channel. Due to reference counting, the connection will only stop receiving messages from the channel after it has unsubscribed the same number of times it subscribed.
-
-**Signature:** `(socketId: number, channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => boolean`
+**Signature:** `(socketIdOrChannelName: string | number | number[] | ArrayBuffer | Uint8Array<ArrayBufferLike> | (string | number | ArrayBuffer | Uint8Array<ArrayBufferLike>)[], channelName: string | ... 1 more ... | Uint8Array<...>, delta?: number) => number[]`
 
 **Parameters:**
 
-- `socketId` - - The unique identifier of the WebSocket connection.
-- `channelName` - - The name of the channel to unsubscribe from (Buffer, ArrayBuffer, or string).
+- `socketIdOrChannelName` - - Can be:
+- A single socket ID (number): applies delta to that socket's subscription
+- An array of socket IDs (number[]): applies delta to all sockets' subscriptions
+- A channel name (Buffer/ArrayBuffer/string): applies delta to all subscribers of this source channel
+- An array mixing socket IDs and channel names: applies delta to sockets and source channel subscribers
+- `channelName` - - The target channel name (Buffer, ArrayBuffer, or string).
+- `delta` - - Optional. The amount to change the subscription count by (default: 1). 
+Positive values add subscriptions, negative values remove them. When the count reaches zero, the subscription is removed.
 
-**Returns:** true if the subscription was completely removed, false if the reference count was decremented or the socket was not subscribed.
+**Returns:** An array of socket IDs that were affected by the operation:
+- For positive delta: socket IDs that became newly subscribed (reference count went from 0 to positive)
+- For negative delta: socket IDs that became completely unsubscribed (reference count reached 0)
 
 ### setToken · function
 
@@ -222,19 +244,6 @@ Associates an authentication token with a WebSocket connection. It will be passe
 
 - `socketId` - - The unique identifier of the WebSocket connection.
 - `token` - - The authentication token (Buffer, ArrayBuffer, or string). It will be converted to a (UTF-8 encoded) Uint8Array.
-
-### copySubscriptions · function
-
-Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber is already subscribed to the destination channel, their reference count will be incremented instead of creating duplicate subscriptions.
-
-**Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => number[]`
-
-**Parameters:**
-
-- `fromChannelName` - - The source channel name (Buffer, ArrayBuffer, or string).
-- `toChannelName` - - The destination channel name (Buffer, ArrayBuffer, or string).
-
-**Returns:** An array of socket IDs that were newly added to the destination channel. Sockets that were already subscribed (and had their reference count incremented) are not included.
 
 ### hasSubscriptions · function
 
