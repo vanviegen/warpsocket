@@ -3,6 +3,9 @@ import * as warpsocket from 'warpsocket';
 const workerId = Math.random().toString(36).substring(2);
 console.log(`Worker thread ${workerId} started`);
 
+// In-memory store for user state (in a real app, use a database)
+const userStates = new Map<number, { alias: string; room: string }>();
+
 export function handleOpen(socketId: number, ip: string, headers: Record<string, string>) {
     console.log(`Socket ${socketId} opened from ${ip} in worker thread ${workerId}`, headers);
     return true; // Allow the connection
@@ -27,9 +30,8 @@ const messageHandlers: Record<string, (data: any, socketId: number, userInfo: an
             });
         }
         
-        // We're storing the user state (alias and room) in the token here
-        // For a real app, you'd probably want to store this in a database, and just store a user/client ID in the token
-        warpsocket.setToken(socketId, JSON.stringify({ alias, room }));
+        // Store user state in memory
+        userStates.set(socketId, { alias, room });
         
         // Subscribe to the new room
         warpsocket.subscribe(socketId, room);
@@ -66,33 +68,33 @@ const messageHandlers: Record<string, (data: any, socketId: number, userInfo: an
     }
 }
 
-export function handleTextMessage(data: string, socketId: number, token?: Uint8Array) {
+export function handleTextMessage(data: string, socketId: number) {
     const message = JSON.parse(data);
     console.log(`Socket ${socketId} message in worker thread ${workerId}:`, message);
 
-    let userInfo = token ? JSON.parse(token.toString()) : undefined;
+    const userInfo = userStates.get(socketId);
 
     const handler = messageHandlers[message.type];
     if (handler) handler(message, socketId, userInfo);
     else console.warn('Unknown message type:', message.type);
 }
 
-export function handleClose(socketId: number, token?: Uint8Array) {
+export function handleClose(socketId: number) {
     console.log('Socket closed:', socketId);
     
-    // Parse user info from token if available
-    if (token) {
-        const userInfo = JSON.parse(Buffer.from(token).toString());
-        if (userInfo && userInfo.room) {
-            // Notify room that user left
-            send(userInfo.room, {
-                type: 'user-left',
-                alias: userInfo.alias,
-                timestamp: Date.now()
-            });
-            console.log(`${userInfo.alias} left room ${userInfo.room}`);
-        }
+    const userInfo = userStates.get(socketId);
+    if (userInfo && userInfo.room) {
+        // Notify room that user left
+        send(userInfo.room, {
+            type: 'user-left',
+            alias: userInfo.alias,
+            timestamp: Date.now()
+        });
+        console.log(`${userInfo.alias} left room ${userInfo.room}`);
     }
+    
+    // Clean up user state
+    userStates.delete(socketId);
     
     // Note: WarpSocket automatically handles unsubscribing closed connections from all channels
 }

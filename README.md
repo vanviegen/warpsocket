@@ -10,7 +10,6 @@ How does this work?
   - Sending messages to specific WebSocket connections.
   - Subscribing connections to named channels.
   - Broadcasting messages to these named channels.
-  - Attaching a token (meta information) to a connection.
 - WebSocket connections are load-balanced across multiple JavaScript worker threads, with each connection pinned to one thread.
 
 So what WarpSocket buys you compared to the standard Node.js WebSocket library (`ws`) is:
@@ -54,16 +53,16 @@ export function handleOpen(socketId, ip, headers) {
   return true; // accept
 }
 
-export async function handleTextMessage(text, socketId, token) {
+export async function handleTextMessage(text, socketId) {
   subscribe(socketId, 'general');
   send('general', `User ${socketId}: ${text}`);
 }
 
-export async function handleTextMessage(data, socketId, token) {
+export async function handleTextMessage(data, socketId) {
   console.error('Binary message received, but not handled');
 }
 
-export function handleClose(socketId, token) {
+export function handleClose(socketId) {
   console.log('Closed', socketId);
 }
 ```
@@ -105,7 +104,7 @@ spawns worker threads that receive and handle WebSocket events.
 
 Notes:
 - Multiple servers can be started concurrently on different addresses.
-  Servers share global server state (channels, tokens, subscriptions, etc.)
+  Servers share global server state (channels, subscriptions, etc.)
   and the same worker pool.
 - Calling `start` without `workerPath` will only work if `start` was already
   called earlier with a `workerPath`.
@@ -144,9 +143,9 @@ address. The Promise rejects if worker initialization fails.
 
 **Parameters:**
 
-- `socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[]` - a
-- `channelName: Uint8Array | ArrayBuffer | string` - b
-- `delta: number` (optional) - c
+- `socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[]`
+- `channelName: Uint8Array | ArrayBuffer | string`
+- `delta: number` (optional)
 
 ### copySubscriptions · function
 
@@ -175,19 +174,19 @@ Handles new WebSocket connections and can reject them. If not provided, all conn
 
 Handles incoming WebSocket text messages from clients.
 
-**Type:** `(data: string, socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
+**Type:** `(data: string, socketId: number) => void`
 
 #### workerInterface.handleBinaryMessage · member
 
 Handles incoming WebSocket binary messages from clients.
 
-**Type:** `(data: Uint8Array<ArrayBufferLike>, socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
+**Type:** `(data: Uint8Array<ArrayBufferLike>, socketId: number) => void`
 
 #### workerInterface.handleClose · member
 
 Handles WebSocket connection closures.
 
-**Type:** `(socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
+**Type:** `(socketId: number) => void`
 
 ### send · function
 
@@ -233,17 +232,6 @@ Positive values add subscriptions, negative values remove them. When the count r
 **Returns:** An array of socket IDs that were affected by the operation:
 - For positive delta: socket IDs that became newly subscribed (reference count went from 0 to positive)
 - For negative delta: socket IDs that became completely unsubscribed (reference count reached 0)
-
-### setToken · function
-
-Associates an authentication token with a WebSocket connection. It will be passed along with all subsequent events for that connection.
-
-**Signature:** `(socketId: number, token: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => void`
-
-**Parameters:**
-
-- `socketId` - - The unique identifier of the WebSocket connection.
-- `token` - - The authentication token (Buffer, ArrayBuffer, or string). It will be converted to a (UTF-8 encoded) Uint8Array.
 
 ### hasSubscriptions · function
 
@@ -319,39 +307,6 @@ export function handleTextMessage(data, socketId) {
       send(message.room, JSON.stringify({ type: 'chat-message', userId: socketId, text: message.text, timestamp: Date.now() }));
       break;
   }
-};
-```
-
-### WebSocket Authentication Example
-
-```typescript
-import { start, send, setToken, subscribe } from 'warpsocket';
-import jwt from 'jsonwebtoken';
-
-start({ bind: '0.0.0.0:3000', workerPath: './api-worker.js' });
-```
-
-`api-worker.js`:
-
-```js
-export function handleTextMessage(data, socketId, currentToken) {
-  const message = JSON.parse(data);
-  if (message.type === 'authenticate') {
-    try {
-      const decoded = jwt.verify(message.token, 'secret');
-      setToken(socketId, JSON.stringify(message.token));
-      subscribe(socketId, `user:${decoded.userId}`);
-      send(socketId, JSON.stringify({ type: 'authenticated', userId: decoded.userId }));
-    } catch (error) {
-      send(socketId, JSON.stringify({ type: 'auth-error', body: 'Invalid token' }));
-    }
-    return;
-  }
-  if (!currentToken) {
-    send(socketId, JSON.stringify({ type: 'auth-required', body: 'Please authenticate first' }));
-    return;
-  }
-  const decoded = JSON.parse(currentToken);
 };
 ```
 

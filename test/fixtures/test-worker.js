@@ -1,11 +1,11 @@
-const { subscribe, setToken, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket, unsubscribe, copySubscriptions } = require('warpsocket');
+const { subscribe, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket, unsubscribe, copySubscriptions } = require('warpsocket');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {
     return true;
 }
 
-function handleTextMessage(data, socketId, currentToken) {
+function handleTextMessage(data, socketId) {
     const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
     let msg;
     try { msg = JSON.parse(text); } catch { return; }
@@ -49,13 +49,6 @@ function handleTextMessage(data, socketId, currentToken) {
         case 'hasSubscriptions':
             const hasSubs = hasSubscriptions(msg.channel);
             send(socketId, JSON.stringify({ type: 'hasSubscriptions', channel: msg.channel, result: hasSubs }));
-            break;
-        case 'auth':
-            setToken(socketId, typeof msg.token === 'string' ? msg.token : JSON.stringify(msg.token));
-            send(socketId, JSON.stringify({ type: 'authenticated' }));
-            break;
-        case 'echoToken':
-            send(socketId, JSON.stringify({ type: 'token', token: currentToken ? Buffer.from(currentToken).toString('utf8') : null }));
             break;
         case 'getSocketId':
             send(socketId, JSON.stringify({ type: 'socketId', socketId: socketId }));

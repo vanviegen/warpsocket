@@ -93,10 +93,9 @@ macro_rules! read_arg_opt {
 }
 
 enum SocketEntry {
-    // Actual WebSocket connection with sender and optional token
+    // Actual WebSocket connection with sender
     Actual {
         sender_mutex: tokio::sync::Mutex<Sender>,
-        token: Option<Vec<u8>>,
     },
     // Virtual socket pointing to another socket ID (which may be actual or virtual)
     Virtual {
@@ -160,7 +159,6 @@ struct SocketRef<'a> {
     _guard: DashRef<'a, u64, SocketEntry>,
     // Direct references to the fields, tied to the guard's lifetime
     pub sender_mutex: &'a tokio::sync::Mutex<Sender>,
-    pub token: &'a Option<Vec<u8>>,
     pub user_data: Option<i32>,
 }
 
@@ -173,16 +171,14 @@ fn get_socket(socket_id: u64) -> Option<SocketRef<'static>> {
     loop {
         if let Some(guard) = SOCKETS.get(&current_id) {
             match guard.value() {
-                SocketEntry::Actual { sender_mutex, token } => {
+                SocketEntry::Actual { sender_mutex } => {
                     // SAFETY: We're transmuting the lifetime to 'static, but the guard
                     // is moved into SocketRef and will keep the references valid.
                     // This is safe because the SocketRef owns the guard.
                     let sender_mutex_ref = unsafe { std::mem::transmute(sender_mutex) };
-                    let token_ref = unsafe { std::mem::transmute(token) };
                     
                     return Some(SocketRef {
                         sender_mutex: sender_mutex_ref,
-                        token: token_ref,
                         user_data: first_user_data,
                         _guard: guard,
                     });
@@ -480,19 +476,6 @@ fn subscribe(mut cx: FunctionContext) -> JsResult<JsArray> {
     Ok(js_array)
 }
 
-fn set_token(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-    let socket_id = read_arg!(&mut cx, 0, u64);
-    let token_bytes = read_arg!(&mut cx, 1, Bytes);
-
-    if let Some(mut entry) = SOCKETS.get_mut(&socket_id) {
-        if let SocketEntry::Actual { token, .. } = entry.value_mut() {
-            *token = Some(token_bytes.clone());
-            return Ok(cx.undefined());
-        }
-    }
-    return cx.throw_error("Socket not found");
-}
-
 fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let channel_name = read_arg!(&mut cx, 0, Bytes);
 
@@ -722,7 +705,6 @@ async fn handle_connection(stream: TcpStream) {
     // Store the WebSocket sender in global map
     SOCKETS.insert(socket_id, SocketEntry::Actual {
         sender_mutex: tokio::sync::Mutex::new(ws_sender),
-        token: None,
     });
     
     // Handle incoming messages
@@ -744,7 +726,7 @@ async fn handle_connection(stream: TcpStream) {
     }
     
     // Remove the socket from the dashmap
-    let socket = SOCKETS.remove(&socket_id).unwrap().1;
+    SOCKETS.remove(&socket_id);
 
     // Call close handler
     if let Some(worker_ref) = WORKERS.get(&worker_id) {
@@ -755,12 +737,8 @@ async fn handle_connection(stream: TcpStream) {
                 let callback = handler.to_inner(&mut cx);
                 
                 let js_socket_id = cx.number(socket_id as f64).upcast();
-                let js_token = match socket {
-                    SocketEntry::Actual { token: Some(token), .. } => create_js_buffer(&mut cx, &token)?.upcast::<JsValue>(),
-                    _ => cx.undefined().upcast(),
-                };
 
-                invoke_js_callback(&mut cx, callback, vec![js_socket_id, js_token]);
+                invoke_js_callback(&mut cx, callback, vec![js_socket_id]);
 
                 Ok(())
             });
@@ -779,9 +757,6 @@ async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message)
         if let Some(handler) = opt_handler {
             let handler = Arc::clone(handler);
             
-            // Copy the token while holding the guard
-            let token_copy = get_socket(socket_id).and_then(|s| s.token.clone());
-            
             let result = schedule_in_worker_main_thread(worker_id, move |mut cx| {
                 let callback = handler.to_inner(&mut cx);
                 
@@ -797,12 +772,7 @@ async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message)
                 
                 let js_socket_id = cx.number(socket_id as f64);
                 
-                let js_token = match token_copy {
-                    Some(token_data) => create_js_buffer(&mut cx, &token_data)?.upcast::<JsValue>(),
-                    None => cx.null().upcast(),
-                };
-                
-                invoke_js_callback(&mut cx, callback, vec![js_data,js_socket_id.upcast(),js_token,]);
+                invoke_js_callback(&mut cx, callback, vec![js_data,js_socket_id.upcast()]);
                 
                 Ok(())
             });
@@ -858,7 +828,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("deregisterWorkerThread", deregister_worker_thread)?;
     cx.export_function("send", send)?;
     cx.export_function("subscribe", subscribe)?;
-    cx.export_function("setToken", set_token)?;
     cx.export_function("hasSubscriptions", has_subscription)?;
     cx.export_function("createVirtualSocket", create_virtual_socket)?;
     cx.export_function("deleteVirtualSocket", delete_virtual_socket)?;

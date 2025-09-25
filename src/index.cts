@@ -11,7 +11,6 @@ declare module "warpsocket/addon-loader" {
     function deregisterWorkerThread(workerId: number): boolean;
     function send(target: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], data: Uint8Array | ArrayBuffer | string): number;
     function subscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta?: number): number[];
-    function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
     function createVirtualSocket(socketId: number, userData?: number): number;
     function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
@@ -35,24 +34,21 @@ export interface WorkerInterface {
     * Handles incoming WebSocket text messages from clients.
     * @param data - The message data as a string.
     * @param socketId - The unique identifier of the WebSocket connection.
-    * @param token - The authentication token associated with the connection (if any).
     */
-    handleTextMessage?(data: string, socketId: number, token?: Uint8Array): void;
+    handleTextMessage?(data: string, socketId: number): void;
 
     /**
     * Handles incoming WebSocket binary messages from clients.
     * @param data - The message data as a Uint8Array.
     * @param socketId - The unique identifier of the WebSocket connection.
-    * @param token - The authentication token associated with the connection (if any).
     */
-    handleBinaryMessage?(data: Uint8Array, socketId: number, token?: Uint8Array): void;
+    handleBinaryMessage?(data: Uint8Array, socketId: number): void;
 
     /**
     * Handles WebSocket connection closures.
     * @param socketId - The unique identifier of the closed WebSocket connection.
-    * @param token - The authentication token associated with the connection (if any).
     */
-    handleClose?(socketId: number, token?: Uint8Array): void;
+    handleClose?(socketId: number): void;
 }
 
 // Internal map to keep Worker instances alive and allow termination
@@ -252,13 +248,6 @@ export function copySubscriptions(fromChannelName: Uint8Array | ArrayBuffer | st
     const result = addon.subscribe(fromChannelName, toChannelName);
     return result as number[];
 }
-
-/** 
-* Associates an authentication token with a WebSocket connection. It will be passed along with all subsequent events for that connection.
-* @param socketId - The unique identifier of the WebSocket connection.
-* @param token - The authentication token (Buffer, ArrayBuffer, or string). It will be converted to a (UTF-8 encoded) Uint8Array.
-*/
-export const setToken = addon.setToken;
 
 /**
  * Checks if a channel has any subscribers.
