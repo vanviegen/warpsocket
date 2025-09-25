@@ -7,7 +7,8 @@ import * as pathMod from 'node:path';
 
 declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
-    function registerWorkerThread(worker: WorkerInterface): void;
+    function registerWorkerThread(worker: WorkerInterface): number;
+    function deregisterWorkerThread(workerId: number): boolean;
     function send(target: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], data: Uint8Array | ArrayBuffer | string): number;
     function subscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta?: number): number[];
     function setToken(socketId: number, token: Uint8Array | ArrayBuffer | string): void;
@@ -54,8 +55,30 @@ export interface WorkerInterface {
     handleClose?(socketId: number, token?: Uint8Array): void;
 }
 
-// Internal array to keep Worker instances alive
-const workers: Worker[] = [];
+// Internal map to keep Worker instances alive and allow termination
+const workers = new Map<number, {worker: Worker, lastSeen: number}>();
+
+// Worker monitoring state
+const WORKER_TIMEOUT_MS = 3000; // 3 seconds timeout
+
+/*
+* Start the worker monitoring system that pings workers and terminates hanging ones.
+*/
+setInterval(() => {
+    const now = Date.now();
+
+    for (const [workerId, worker] of workers) {
+        const timeSinceLastSeen = now - worker.lastSeen;
+        if (timeSinceLastSeen > WORKER_TIMEOUT_MS) {
+            addon.deregisterWorkerThread(workerId);
+            worker.worker.terminate();
+            workers.delete(workerId);
+        }
+
+        worker.worker.postMessage({ type: '__ping', timestamp: now });
+    }
+}, 500); // Check twice per second
+
 
 /** 
  * Starts a WebSocket server bound to the given address and (optionally)
@@ -65,8 +88,8 @@ const workers: Worker[] = [];
  * - Multiple servers can be started concurrently on different addresses.
  *   Servers share global server state (channels, tokens, subscriptions, etc.)
  *   and the same worker pool.
- * - Calling `start` without `workerPath` requires that at least one worker
- *   has been registered previously via `registerWorkerThread`.
+ * - Calling `start` without `workerPath` will only work if `start` was already
+ *   called earlier with a `workerPath`. 
  *
  * @param options - Configuration object:
  *   - bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080").
@@ -77,8 +100,7 @@ const workers: Worker[] = [];
  *                 Worker modules may export any subset of the `WorkerInterface`
  *                 handlers. If `threads` is 0, the module will be registered
  *                 on the main thread and no worker threads will be spawned.
- *   - threads: Optional. Number of worker threads to spawn. When 0 the
- *              worker module is registered on the main thread. When a positive
+ *   - threads: Optional. Number of worker threads to spawn. When a positive
  *              integer is provided, that number of Node.js `Worker` threads
  *              are created and set up to handle WebSocket events. When omitted,
  *              defaults to the number of CPU cores or 4, whichever is higher.
@@ -103,27 +125,40 @@ export async function start(options: { bind: string, workerPath?: string, thread
 const BOOTSTRAP_WORKER = `
 const { workerData: workerModulePath, parentPort } = require('node:worker_threads');
 const addon = require('warpsocket/addon-loader');
+
+// Handle ping messages from main thread
+parentPort.on('message', (msg) => {
+    if (msg && msg.type === '__ping') {
+        parentPort.postMessage({ type: '__pong', timestamp: msg.timestamp });
+    }
+});
+
 (async () => {
     const workerModule = await import(workerModulePath);
-    addon.registerWorkerThread(workerModule);
-    parentPort.postMessage({ type: 'registered' });
-})().catch((err) => {
-    console.error('warpsocket: worker init failed:', err);
-});
+    const workerId = addon.registerWorkerThread(workerModule);
+    console.log('Worker bootstrap: registered with workerId', workerId);
+    parentPort.postMessage({ type: 'registered', workerId });
+})();
 `;
 
 function spawnWorker(workerModulePath: string, running=false): Promise<void> { 
     return new Promise<void>((resolve, reject) => {
         const w = new Worker(BOOTSTRAP_WORKER, {
-            
             eval: true,
             workerData: workerModulePath
         });
 
+        let workerId: number;
+
         w.on('message', (msg) => {
             if (msg && (msg as any).type === 'registered') {
+                workerId = (msg as any).workerId;
+                workers.set(workerId, {worker: w, lastSeen: Date.now()});
+                console.log(`Worker ${workerId} registered`);
                 running = true;
                 resolve();
+            } else if (msg && (msg as any).type === '__pong') {
+                workers.get(workerId)!.lastSeen = Date.now();
             }
         });
 
@@ -133,6 +168,8 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
 
         w.on('exit', (code) => {
             console.error('warpsocket: worker thread exited with code', code);
+            workers.delete(workerId);
+            addon.deregisterWorkerThread(workerId);
             if (running) {
                 // Start a replacement worker
                 spawnWorker(workerModulePath, true);
@@ -149,13 +186,7 @@ async function spawnWorkers(workerModulePath: string, threads?: number): Promise
         workerModulePath = pathMod.resolve(process.cwd(), workerModulePath);
     }
 
-    const threadCount = threads == null ? Math.max(os.cpus()?.length || 1, 4) : threads;
-
-    // If threads is 0 or less, register the worker module on the main thread
-    if (threadCount <= 0) {
-        addon.registerWorkerThread(await import(workerModulePath));
-        return;
-    }
+    const threadCount = threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(0, 0|threads);
 
     const promises = [];
     for (let i = 0; i < threadCount; i++) {
@@ -163,13 +194,6 @@ async function spawnWorkers(workerModulePath: string, threads?: number): Promise
     }
     await Promise.all(promises);
 }
-
-/** 
-* Manually registers a worker thread with the server to handle WebSocket messages.
-* This function is normally not needed, as worker threads can be automatically registered by calling `start` with a `workerPath`.
-* @param worker - Worker interface implementation with optional handlers.
-*/
-export const registerWorkerThread = addon.registerWorkerThread;
 
 /** 
 * Sends data to a specific WebSocket connection, multiple connections, or broadcasts to all subscribers of a channel.
@@ -207,9 +231,9 @@ export const send = addon.send;
 */
 export const subscribe = addon.subscribe;
 
-/** 
-* Exactly the same as {@link subscribe}, only with a negative delta (defaulting to 1, which means a single unsubscribe, or a subscribe with delta -1).
-*/
+/**
+ * Exactly the same as {@link subscribe}, only with a negative delta (defaulting to 1, which means a single unsubscribe, or a subscribe with delta -1).
+ */
 export function unsubscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta: number = 1): number[] {
     return addon.subscribe(socketIdOrChannelName, channelName, -delta);
 }

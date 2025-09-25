@@ -17,6 +17,9 @@ test('broadcast to channel reaches subscribers (threads:0)', async () => {
   const parsed = JSON.parse(msg);
   assert.equal(parsed.type, 'published');
   assert.equal(parsed.data, 'hello');
+
+  a.close();
+  b.close();
 });
 
 test('hasSubscriptions returns correct status', async () => {
@@ -68,6 +71,8 @@ test('hasSubscriptions returns correct status', async () => {
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.channel, 'test-room');
   assert.equal(parsed.result, true);
+
+  a.close();
 });
 
 test('multiple subscriptions to same channel by same socket are reference counted', async () => {
@@ -105,6 +110,8 @@ test('multiple subscriptions to same channel by same socket are reference counte
   parsed = JSON.parse(pubMsg);
   assert.equal(parsed.type, 'published');
   assert.equal(parsed.data, 'test-multi');
+
+  a.close();
 });
 
 test('unsubscribe decrements reference count and removes only when count reaches zero', async () => {
@@ -155,6 +162,9 @@ test('unsubscribe decrements reference count and removes only when count reaches
   parsed = JSON.parse(msg);
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.result, true);
+
+  a.close();
+  b.close();
 });
 
 test('copySubscriptions increments reference counts and returns new socket IDs', async () => {
@@ -197,6 +207,9 @@ test('copySubscriptions increments reference counts and returns new socket IDs',
   const msgB = await receivedB;
   assert.equal(msgA.data, 'copied-test');
   assert.equal(msgB.data, 'copied-test');
+
+  a.close();
+  b.close();
 });
 
 test('send to array of socket IDs', async () => {
@@ -205,13 +218,16 @@ test('send to array of socket IDs', async () => {
   const c = await createWebSocket();
 
   // Get socket IDs
+  const promiseA = onceMessage(a);
+  const promiseB = onceMessage(b);
+  const promiseC = onceMessage(c);
   a.send(JSON.stringify({ type: 'getSocketId' }));
   b.send(JSON.stringify({ type: 'getSocketId' }));
   c.send(JSON.stringify({ type: 'getSocketId' }));
 
-  const socketIdMsgA = await onceMessage(a);
-  const socketIdMsgB = await onceMessage(b);
-  const socketIdMsgC = await onceMessage(c);
+  const socketIdMsgA = await promiseA;
+  const socketIdMsgB = await promiseB;
+  const socketIdMsgC = await promiseC;
 
   const socketIdA = JSON.parse(socketIdMsgA).socketId;
   const socketIdB = JSON.parse(socketIdMsgB).socketId;
@@ -248,6 +264,11 @@ test('send to array of socket IDs', async () => {
 
   await bReceivePromise;
   assert.equal(bReceivedMessage, false, 'Socket B should not have received the array message');
+
+  a.close();
+  b.close();
+  c.close();
+
 });
 
 test('subscribe with array of socket IDs', async () => {
@@ -256,13 +277,16 @@ test('subscribe with array of socket IDs', async () => {
   const c = await createWebSocket();
 
   // Get socket IDs
+  const promiseA = onceMessage(a);
+  const promiseB = onceMessage(b);
+  const promiseC = onceMessage(c);
   a.send(JSON.stringify({ type: 'getSocketId' }));
   b.send(JSON.stringify({ type: 'getSocketId' }));
   c.send(JSON.stringify({ type: 'getSocketId' }));
 
-  const socketIdMsgA = await onceMessage(a);
-  const socketIdMsgB = await onceMessage(b);
-  const socketIdMsgC = await onceMessage(c);
+  const socketIdMsgA = await promiseA;
+  const socketIdMsgB = await promiseB;
+  const socketIdMsgC = await promiseC;
 
   const socketIdA = JSON.parse(socketIdMsgA).socketId;
   const socketIdB = JSON.parse(socketIdMsgB).socketId;
@@ -316,6 +340,11 @@ test('subscribe with array of socket IDs', async () => {
   // Should be false since they were already subscribed
   assert.equal(parsed2.results[0], false);
   assert.equal(parsed2.results[1], false);
+
+  a.close();
+  b.close();
+  c.close();
+
 });
 
 test('unsubscribe based on another channel using negative delta', async () => {
@@ -372,6 +401,9 @@ test('unsubscribe based on another channel using negative delta', async () => {
   a.on('message', () => { receivedByA = true; });
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(receivedByA, false);
+
+  a.close();
+  b.close();
 });
 
 test('send returns correct count for channel broadcasts', async () => {
@@ -407,6 +439,10 @@ test('send returns correct count for channel broadcasts', async () => {
   // Check that publish returned count of 2 (a and b subscribed)
   const result = await publishResult;
   assert.equal(result.count, 2, 'Publish should return count of 2 for subscribers a and b');
+
+  a.close();
+  b.close();
+  c.close();
 });
 
 test('send returns 0 for non-existent socket IDs', async () => {
@@ -424,4 +460,6 @@ test('send returns 0 for non-existent socket IDs', async () => {
   // Check that send returned count of 0 (no recipients)
   const result = await sendResult;
   assert.equal(result.count, 0, 'Send to non-existent sockets should return count of 0');
+
+  a.close();
 });

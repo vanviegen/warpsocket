@@ -15,5 +15,6 @@ dashmap = "5.0"
 futures-util = "0.3"
 lazy_static = "1.4"
 http = "=0.2.12"
+nix = { version = "0.27", features = ["signal"] }
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

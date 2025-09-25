@@ -11,7 +11,7 @@ How does this work?
   - Subscribing connections to named channels.
   - Broadcasting messages to these named channels.
   - Attaching a token (meta information) to a connection.
-- JavaScript callbacks are load-balanced across multiple JavaScript worker threads.
+- WebSocket connections are load-balanced across multiple JavaScript worker threads, with each connection pinned to one thread.
 
 So what WarpSocket buys you compared to the standard Node.js WebSocket library (`ws`) is:
 - More performant and memory efficient connection handling.
@@ -68,6 +68,18 @@ export function handleClose(socketId, token) {
 }
 ```
 
+## Technical overview
+
+When you `start()` a WarpSocket server from the main thread of your Node.js/Bun application, it will spawn a given number of JavaScript worker threads. Each of these worker threads will load a JavaScript file you specified (`workerPath`) and register itself with the native addon (written in Rust using NEON for the Node.js bindings). As these are actual threads, not processes, they share the same memory space. Though JavaScript objects are not shared between threads, the native addon does share its internal state (connections, channels, subscriptions, etc.) between all threads.
+
+Besides firing up worker threads, when starting a WarpSocket server, the native addon will also bind to the specified address and start accepting WebSocket connections. It handles incoming connections and messages using asynchronous multi-threaded Rust code (using Tokio and Tungstenite). This should be fast!
+
+Each incoming WebSocket connection is assigned a unique socket ID and coupled to a worker thread using a round-robin strategy. All events for that connection (open, incoming message, close) are then routed to that same worker thread. This means that your JavaScript code in the worker thread can maintain per-connection state in memory (e.g. in a Map keyed by socket ID) without needing to worry about synchronization between threads.
+
+Events are scheduled to be run in the order that they came in (at least for messages coming from a single WebSocket) in the coupled worker's main thread. Worker handler functions may be synchronous or asynchronous. They may do whatever it is a backend server usually does: access databases, call other services, etc. Besides that, they may also call WarpSocket functions to send messages (to specific socket ids or channels) and subscribe to channels. Because WarpSocket data structures are shared between threads, a worker can subscribe to any channel and send messages to any channel/connection, even if that connection is coupled to a different worker thread.
+
+Be aware that if you block a worker thread for too long, it will delay processing of all events for all connections assigned to that worker (as is usual in Node.js). In order to prevent an infinite loop (caused by a logic error) from bringing down the entire server, WarpSocket includes automatic worker thread monitoring and recovery. When a worker thread is unable to respond to a ping message within 3 seconds, it is considered unresponsive and will be terminated. All connections assigned to that worker are then closed (when they next send a message) with an appropriate error code, while other workers continue to operate normally. Client that get disconnected should be made to reconnect (they'll be assigned a new worker), reinitialize their state, and continue business as usual.
+
 ## Performance
 
 The `examples/performance/` directory contains a simple benchmarking test. I'm planning to do a more thorough performance analysis on AWS soon (I've already had AI generate a Terraform config for it, but haven't had the heart to run it yet), but for now here's a workload I was able to sustain on my laptop:
@@ -95,8 +107,8 @@ Notes:
 - Multiple servers can be started concurrently on different addresses.
   Servers share global server state (channels, tokens, subscriptions, etc.)
   and the same worker pool.
-- Calling `start` without `workerPath` requires that at least one worker
-  has been registered previously via `registerWorkerThread`.
+- Calling `start` without `workerPath` will only work if `start` was already
+  called earlier with a `workerPath`.
 
 **Signature:** `(options: { bind: string; workerPath?: string; threads?: number; }) => Promise<void>`
 
@@ -111,8 +123,7 @@ Notes:
  Worker modules may export any subset of the `WorkerInterface`
  handlers. If `threads` is 0, the module will be registered
  on the main thread and no worker threads will be spawned.
-- threads: Optional. Number of worker threads to spawn. When 0 the
-worker module is registered on the main thread. When a positive
+- threads: Optional. Number of worker threads to spawn. When a positive
 integer is provided, that number of Node.js `Worker` threads
 are created and set up to handle WebSocket events. When omitted,
 defaults to the number of CPU cores or 4, whichever is higher.
@@ -133,9 +144,9 @@ address. The Promise rejects if worker initialization fails.
 
 **Parameters:**
 
-- `socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[]`
-- `channelName: Uint8Array | ArrayBuffer | string`
-- `delta: number` (optional)
+- `socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[]` - a
+- `channelName: Uint8Array | ArrayBuffer | string` - b
+- `delta: number` (optional) - c
 
 ### copySubscriptions · function
 
@@ -177,17 +188,6 @@ Handles incoming WebSocket binary messages from clients.
 Handles WebSocket connection closures.
 
 **Type:** `(socketId: number, token?: Uint8Array<ArrayBufferLike>) => void`
-
-### registerWorkerThread · function
-
-Manually registers a worker thread with the server to handle WebSocket messages.
-This function is normally not needed, as worker threads can be automatically registered by calling `start` with a `workerPath`.
-
-**Signature:** `(worker: WorkerInterface) => void`
-
-**Parameters:**
-
-- `worker` - - Worker interface implementation with optional handlers.
 
 ### send · function
 

@@ -64,11 +64,22 @@ test.afterEach(async () => {
 /**
  * Wait for the next message from a WebSocket
  * @param {WebSocket} ws - The WebSocket instance
+ * @param {number} timeout - Timeout in milliseconds (default: 2000)
  * @returns {Promise<string|Buffer>} The message as a string or binary data
  */
-const onceMessage = (ws) => new Promise((resolve) => 
-  ws.once('message', (m) => resolve(m))
-);
+const onceMessage = (ws, timeout = 2000) => new Promise((resolve, reject) => {
+  const onMsg = (m) => {
+    ws.off('message', onMsg);
+    resolve(m);
+  };
+  ws.on('message', onMsg);
+  if (timeout != null) {
+    setTimeout(() => {
+      ws.off('message', onMsg);
+      reject(new Error(`Timeout waiting for message`));
+    }, timeout);
+  }
+});
 
 /**
  * Wait for a message of a specific type from a WebSocket
