@@ -104,7 +104,7 @@ spawns worker threads that receive and handle WebSocket events.
 
 Notes:
 - Multiple servers can be started concurrently on different addresses.
-  Servers share global server state (channels, subscriptions, etc.)
+  Servers share global server state (channels, tokens, subscriptions, etc.)
   and the same worker pool.
 - Calling `start` without `workerPath` will only work if `start` was already
   called earlier with a `workerPath`.
@@ -278,6 +278,45 @@ This is a convenient way to bulk-unsubscribe a virtual socket from all its chann
 if it points to this specific target socket ID. This can help prevent unauthorized unsubscribes.
 
 **Returns:** true if the virtual socket was deleted, false if it was not found or target didn't match.
+
+### getKey · function
+
+Reads the raw bytes stored for a key in the shared in-memory store.
+
+**Signature:** `(key: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => Uint8Array<ArrayBufferLike>`
+
+**Parameters:**
+
+- `key` - - Key to read (Buffer, ArrayBuffer, or string).
+
+**Returns:** A Uint8Array when the key exists, or undefined otherwise.
+
+### setKey · function
+
+Stores or deletes a value in the shared key/value store.
+
+**Signature:** `(key: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, value?: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => Uint8Array<...>`
+
+**Parameters:**
+
+- `key` - - Key to upsert (Buffer, ArrayBuffer, or string).
+- `value` - - Optional value to store. Pass `undefined` to delete the key instead.
+
+**Returns:** The previous value as a Uint8Array when the key existed, or undefined if it did not.
+
+### setKeyIf · function
+
+Atomically updates a key only when its current value matches the expected check value.
+
+**Signature:** `(key: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, newValue?: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, checkValue?: string | ... 1 more ... | Uint8Array<...>) => boolean`
+
+**Parameters:**
+
+- `key` - - Key to update (Buffer, ArrayBuffer, or string).
+- `newValue` - - Optional replacement value. Pass `undefined` to delete the key on success.
+- `checkValue` - - Optional expected value. Pass `undefined` to require that the key is absent.
+
+**Returns:** true when the compare-and-set succeeds, false otherwise.
 
 ## Examples
 

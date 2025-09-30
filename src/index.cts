@@ -14,6 +14,9 @@ declare module "warpsocket/addon-loader" {
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
     function createVirtualSocket(socketId: number, userData?: number): number;
     function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
+    function getKey(key: Uint8Array | ArrayBuffer | string): Uint8Array | undefined;
+    function setKey(key: Uint8Array | ArrayBuffer | string, value?: Uint8Array | ArrayBuffer | string | undefined): Uint8Array | undefined;
+    function setKeyIf(key: Uint8Array | ArrayBuffer | string, newValue?: Uint8Array | ArrayBuffer | string | undefined, checkValue?: Uint8Array | ArrayBuffer | string | undefined): boolean;
 }
 
 /**
@@ -279,3 +282,27 @@ export const createVirtualSocket = addon.createVirtualSocket;
  * @returns true if the virtual socket was deleted, false if it was not found or target didn't match.
  */
 export const deleteVirtualSocket = addon.deleteVirtualSocket;
+
+/**
+ * Reads the raw bytes stored for a key in the shared in-memory store.
+ * @param key - Key to read (Buffer, ArrayBuffer, or string).
+ * @returns A Uint8Array when the key exists, or undefined otherwise.
+ */
+export const getKey = addon.getKey;
+
+/**
+ * Stores or deletes a value in the shared key/value store.
+ * @param key - Key to upsert (Buffer, ArrayBuffer, or string).
+ * @param value - Optional value to store. Pass `undefined` to delete the key instead.
+ * @returns The previous value as a Uint8Array when the key existed, or undefined if it did not.
+ */
+export const setKey = addon.setKey;
+
+/**
+ * Atomically updates a key only when its current value matches the expected check value.
+ * @param key - Key to update (Buffer, ArrayBuffer, or string).
+ * @param newValue - Optional replacement value. Pass `undefined` to delete the key on success.
+ * @param checkValue - Optional expected value. Pass `undefined` to require that the key is absent.
+ * @returns true when the compare-and-set succeeds, false otherwise.
+ */
+export const setKeyIf = addon.setKeyIf;

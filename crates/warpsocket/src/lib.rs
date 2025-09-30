@@ -16,10 +16,12 @@ use tokio_tungstenite::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use dashmap::mapref::one::Ref as DashRef;
 use lazy_static::lazy_static;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
+use neon::types::JsUndefined;
 use neon::event::Channel;
 use std::sync::Arc;
 
@@ -115,6 +117,8 @@ lazy_static! {
     static ref WORKER_IDS: std::sync::RwLock<Vec<u64>> = std::sync::RwLock::new(Vec::new());
     // Global runtime for executing async operations from sync contexts
     static ref RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    // Global key-value store accessible from all threads
+    static ref KEY_VALUE_STORE: DashMap<Vec<u8>, Vec<u8>> = DashMap::new();
 }
 
 // Atomic counter for generating unique socket IDs
@@ -576,6 +580,92 @@ fn create_js_buffer<'a, C: Context<'a>>(cx: &mut C, data: &[u8]) -> NeonResult<H
     Ok(js_buf)
 }
 
+fn read_optional_bytes(cx: &mut FunctionContext, index: usize) -> NeonResult<Option<Vec<u8>>> {
+    match cx.argument_opt(index) {
+        Some(val) => {
+            if val.downcast::<JsUndefined, _>(cx).is_ok() {
+                Ok(None)
+            } else {
+                js_value_to_bytes(cx, val).map(Some)
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+fn get_key(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let key = read_arg!(&mut cx, 0, Bytes);
+
+    if let Some(value_ref) = KEY_VALUE_STORE.get(&key) {
+        let buffer = create_js_buffer(&mut cx, value_ref.value())?;
+        Ok(buffer.upcast())
+    } else {
+        Ok(cx.undefined().upcast())
+    }
+}
+
+fn set_key(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let key = read_arg!(&mut cx, 0, Bytes);
+    let value_opt = read_optional_bytes(&mut cx, 1)?;
+
+    let old_value = match value_opt {
+        Some(value) => {
+            KEY_VALUE_STORE.insert(key, value)
+        }
+        None => {
+            KEY_VALUE_STORE.remove(&key).map(|(_, v)| v)
+        }
+    };
+
+    if let Some(old) = old_value {
+        let buffer = create_js_buffer(&mut cx, &old)?;
+        Ok(buffer.upcast())
+    } else {
+        Ok(cx.undefined().upcast())
+    }
+
+}
+
+fn set_key_if(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let key = read_arg!(&mut cx, 0, Bytes);
+    let new_value = read_optional_bytes(&mut cx, 1)?;
+    let check_value = read_optional_bytes(&mut cx, 2)?;
+
+    let updated = match KEY_VALUE_STORE.entry(key) {
+        Entry::Occupied(mut entry) => {
+            if let Some(check) = check_value.as_ref() {
+                if entry.get().as_slice() == check.as_slice() {
+                    match new_value.clone() {
+                        Some(new_val) => {
+                            entry.insert(new_val);
+                        }
+                        None => {
+                            entry.remove();
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        Entry::Vacant(entry) => {
+            if check_value.is_none() {
+                if let Some(new_val) = new_value {
+                    entry.insert(new_val);
+                }
+                true
+            } else {
+                false
+            }
+        }
+    };
+
+    Ok(cx.boolean(updated))
+}
+
 async fn start_server(listener: TcpListener) {
     // Cleanup task
     tokio::spawn(async move {
@@ -831,6 +921,9 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("hasSubscriptions", has_subscription)?;
     cx.export_function("createVirtualSocket", create_virtual_socket)?;
     cx.export_function("deleteVirtualSocket", delete_virtual_socket)?;
+    cx.export_function("getKey", get_key)?;
+    cx.export_function("setKey", set_key)?;
+    cx.export_function("setKeyIf", set_key_if)?;
     Ok(())
 }
 

@@ -1,4 +1,15 @@
-const { subscribe, send, hasSubscriptions, createVirtualSocket, deleteVirtualSocket, unsubscribe, copySubscriptions } = require('warpsocket');
+const {
+    subscribe,
+    send,
+    hasSubscriptions,
+    createVirtualSocket,
+    deleteVirtualSocket,
+    unsubscribe,
+    copySubscriptions,
+    getKey,
+    setKey,
+    setKeyIf
+} = require('warpsocket');
 
 // Most E2E tests run with threads: 0 so this runs on the main thread.
 function handleOpen() {
@@ -25,13 +36,13 @@ function handleTextMessage(data, socketId) {
             send(socketId, JSON.stringify({ type: 'subscribedArray', channel: msg.channel, results: results }));
             break;
         case 'unsub':
-            const unsubResult = require('warpsocket').unsubscribe(msg.socketId || socketId, msg.channel);
+            const unsubResult = unsubscribe(msg.socketId || socketId, msg.channel);
             // unsubResult is now an array of newly unsubscribed socket IDs
             const wasRemoved = unsubResult.includes(msg.socketId || socketId);
             send(socketId, JSON.stringify({ type: 'unsubscribed', channel: msg.channel, wasRemoved: wasRemoved }));
             break;
         case 'copySubs':
-            const copyResult = require('warpsocket').copySubscriptions(msg.fromChannel, msg.toChannel);
+            const copyResult = copySubscriptions(msg.fromChannel, msg.toChannel);
             send(socketId, JSON.stringify({ type: 'subsCopied', fromChannel: msg.fromChannel, toChannel: msg.toChannel, newSocketIds: copyResult }));
             break;
         case 'unsubFromChannel':
@@ -66,6 +77,35 @@ function handleTextMessage(data, socketId) {
             const messageData = msg.binary ? Buffer.from(msg.data) : JSON.stringify({ type: 'directMessage', data: msg.data });
             const sendCount = send(socketIds, messageData);
             send(socketId, JSON.stringify({ type: 'sendResult', count: sendCount }));
+            break;
+        case 'kvSet':
+            {
+                const oldRaw = setKey(msg.key, msg.value);
+                const oldValue = oldRaw ? Buffer.from(oldRaw).toString('utf8') : null;
+                send(socketId, JSON.stringify({ type: 'kvSetAck', key: msg.key, oldValue }));
+            }
+            break;
+        case 'kvGet':
+            {
+                const rawValue = getKey(msg.key);
+                const exists = !!rawValue;
+                const value = rawValue ? Buffer.from(rawValue).toString('utf8') : null;
+                send(socketId, JSON.stringify({ type: 'kvGetResult', key: msg.key, exists, value }));
+            }
+            break;
+        case 'kvSetIf':
+            {
+                const success = setKeyIf(msg.key, msg.newValue, msg.checkValue);
+                const currentRaw = getKey(msg.key);
+                const currentValue = currentRaw ? Buffer.from(currentRaw).toString('utf8') : null;
+                send(socketId, JSON.stringify({
+                    type: 'kvSetIfResult',
+                    key: msg.key,
+                    success,
+                    attemptValue: msg.newValue ?? null,
+                    currentValue
+                }));
+            }
             break;
         case 'whoami':
             if (!globalThis.__workerId) {
