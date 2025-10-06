@@ -53,73 +53,86 @@ test('deleteVirtualSocket removes the virtual socket', async () => {
     assert.equal(deleteResponse2.success, false);
 });
 
-test('virtual socket with user data includes _vsud in JSON messages', async () => {
+test('virtual socket with user prefix prefixes text messages', async () => {
     const ws1 = await createWebSocket();
     const ws2 = await createWebSocket();
     
-    // Create virtual socket with user data
-    const userData = 42;
-    ws1.send(JSON.stringify({ type: 'createVirtualSocket', userData: userData }));
+    // Create virtual socket with user prefix
+    const userPrefix = 'PREFIX:';
+    ws1.send(JSON.stringify({ type: 'createVirtualSocket', userPrefix: userPrefix }));
     const {virtualSocketId} = await onceMessageOfType(ws1, 'virtualSocketCreated');
     
-    ws1.send(JSON.stringify({ type: 'sub', socketId: virtualSocketId, channel: 'test-vsud' }));
+    ws1.send(JSON.stringify({ type: 'sub', socketId: virtualSocketId, channel: 'test-prefix' }));
     await onceMessageOfType(ws1, 'subscribed');
     
-    // Send message to channel - user data should be automatically included
-    ws2.send(JSON.stringify({ type: 'pub', channel: 'test-vsud', data: 'hello' }));
+    // Send message to channel - user prefix should be automatically prepended
+    ws2.send(JSON.stringify({ type: 'pub', channel: 'test-prefix', data: 'hello' }));
     
-    // Verify the user data is included in the message
-    const message = await onceMessageOfType(ws1, 'published');
-    assert.equal(message._vsud, userData);
+    // The message should come back as binary with prefix prepended (because prefixing makes it binary)
+    const rawMessage = await onceMessage(ws1);
+    // Check if it's a Buffer or ArrayBuffer
+    assert.ok(rawMessage instanceof ArrayBuffer || Buffer.isBuffer(rawMessage));
+    
+    // Convert binary to text and check the prefix
+    const textMessage = new TextDecoder().decode(rawMessage);
+    assert.ok(textMessage.startsWith(userPrefix));
+    
+    // Parse the JSON part (after the prefix)
+    const jsonPart = textMessage.slice(userPrefix.length);
+    const message = JSON.parse(jsonPart);
+    assert.equal(message.type, 'published');
     assert.equal(message.data, 'hello');
+    assert.equal(message.channel, 'test-prefix');
 });
 
-test('virtual socket with user data includes user data in binary messages', async () => {
+test('virtual socket with user prefix prefixes binary messages', async () => {
     const ws1 = await createWebSocket();
     const ws2 = await createWebSocket();
     
-    // Create virtual socket with user data
-    const userData = 123;
-    ws1.send(JSON.stringify({ type: 'createVirtualSocket', userData: userData }));
+    // Create virtual socket with user prefix (binary data)
+    const userPrefix = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+    ws1.send(JSON.stringify({ type: 'createVirtualSocket', userPrefix: Array.from(userPrefix) }));
     const virtualResponse = await onceMessageOfType(ws1, 'virtualSocketCreated');
     const virtualSocketId = virtualResponse.virtualSocketId;
     
-    ws1.send(JSON.stringify({ type: 'sub', socketId: virtualSocketId, channel: 'test-binary-vsud' }));
+    ws1.send(JSON.stringify({ type: 'sub', socketId: virtualSocketId, channel: 'test-binary-prefix' }));
     await onceMessageOfType(ws1, 'subscribed');
     
     // Send binary message to channel
-    ws2.send(JSON.stringify({ type: 'pub', channel: 'test-binary-vsud', data: 'binary-test', binary: true }));
+    ws2.send(JSON.stringify({ type: 'pub', channel: 'test-binary-prefix', data: 'binary-test', binary: true }));
     
-    // The message should come as binary with the user data prefixed (as i32)
+    // The message should come as binary with the user prefix prepended
     const binaryMessage = await onceMessage(ws1);
     assert.ok(binaryMessage instanceof ArrayBuffer);
     
-    const view = new DataView(binaryMessage);
-    const prefixedUserData = view.getInt32(0, false); // big-endian, signed 32-bit
-    assert.equal(prefixedUserData, userData);
+    const receivedBytes = new Uint8Array(binaryMessage);
+    
+    // Check that the first 4 bytes match our prefix
+    for (let i = 0; i < userPrefix.length; i++) {
+        assert.equal(receivedBytes[i], userPrefix[i]);
+    }
     
     // The rest should be the original data
-    const originalData = new TextDecoder().decode(binaryMessage.slice(4));
+    const originalData = new TextDecoder().decode(binaryMessage.slice(userPrefix.length));
     assert.equal(originalData, 'binary-test');
 });
 
-test('virtual socket without user data receives messages normally', async () => {
+test('virtual socket without user prefix receives messages normally', async () => {
     const ws1 = await createWebSocket();
     const ws2 = await createWebSocket();
     
-    // Create virtual socket without user data
+    // Create virtual socket without user prefix
     ws1.send(JSON.stringify({ type: 'createVirtualSocket' }));
     const {virtualSocketId} = await onceMessageOfType(ws1, 'virtualSocketCreated');
     
-    ws1.send(JSON.stringify({ type: 'sub', socketId: virtualSocketId, channel: 'test-no-vsud' }));
+    ws1.send(JSON.stringify({ type: 'sub', socketId: virtualSocketId, channel: 'test-no-prefix' }));
     await onceMessageOfType(ws1, 'subscribed');
     
     // Send message to channel
-    ws2.send(JSON.stringify({ type: 'pub', channel: 'test-no-vsud', data: 'hello normal' }));
+    ws2.send(JSON.stringify({ type: 'pub', channel: 'test-no-prefix', data: 'hello normal' }));
     
     // Message should be received without modification
     const message = await onceMessageOfType(ws1, 'published');
-    assert.equal(message._vsud, undefined);
     assert.equal(message.data, 'hello normal');
 });
 

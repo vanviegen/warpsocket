@@ -65,7 +65,12 @@ function handleTextMessage(data, socketId) {
             send(socketId, JSON.stringify({ type: 'socketId', socketId: socketId }));
             break;
         case 'createVirtualSocket':
-            const virtualSocketId = createVirtualSocket(msg.targetSocketId || socketId, msg.userData);
+            let userPrefix = msg.userPrefix;
+            // Convert array to Buffer if needed
+            if (Array.isArray(userPrefix)) {
+                userPrefix = Buffer.from(userPrefix);
+            }
+            const virtualSocketId = createVirtualSocket(msg.targetSocketId || socketId, userPrefix);
             send(socketId, JSON.stringify({ type: 'virtualSocketCreated', virtualSocketId: virtualSocketId }));
             break;
         case 'deleteVirtualSocket':

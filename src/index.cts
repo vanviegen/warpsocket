@@ -12,7 +12,7 @@ declare module "warpsocket/addon-loader" {
     function send(target: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], data: Uint8Array | ArrayBuffer | string): number;
     function subscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta?: number): number[];
     function hasSubscriptions(channelName: Uint8Array | ArrayBuffer | string): boolean;
-    function createVirtualSocket(socketId: number, userData?: number): number;
+    function createVirtualSocket(socketId: number, userPrefix?: Uint8Array | ArrayBuffer | string): number;
     function deleteVirtualSocket(virtualSocketId: number, expectedTargetSocketId?: number): boolean;
     function getKey(key: Uint8Array | ArrayBuffer | string): Uint8Array | undefined;
     function setKey(key: Uint8Array | ArrayBuffer | string, value?: Uint8Array | ArrayBuffer | string | undefined): Uint8Array | undefined;
@@ -203,10 +203,7 @@ async function spawnWorkers(workerModulePath: string, threads?: number): Promise
 * @param data - The data to send (Buffer, ArrayBuffer, or string).
 * @returns the number of recipients that got sent the message.
 *
-* When target is a virtual socket with user data (or a channel that has such a subscriber):
-* - For text messages: adds the user data as the `_vsud` property to JSON objects.
-*   Example: `{"_vsud":12345,"your":"original","data":true}`.
-* - For binary messages: prefixes the user data as a 32-bit integer in network byte order.
+* When target is a virtual socket with user prefix (or a channel that has such a subscriber), that prefix is prepended to the message. In case of a text message, the prefix bytes are assumed to be valid UTF-8.
 * 
 * When target is an array, the message is sent to each target in the array.
 */
@@ -265,10 +262,7 @@ export const hasSubscriptions = addon.hasSubscriptions;
  * This allows for convenient bulk unsubscription by deleting the virtual socket.
  * Virtual sockets can also point to other virtual sockets, creating a chain that resolves to an actual socket.
  * @param socketId - The identifier of the actual WebSocket connection or another virtual socket to point to.
- * @param userData - Optional user data (32-bit signed integer) that will be included in channel broadcasts to this virtual socket.
- *     When provided, this data will be included in messages sent to channels this virtual socket subscribes to.
- *     - Text messages will need to be JSON objects for this to work. They'll get a `_vsud` property added with the user data.
- *     - Binary messages will be prefixed with a i32 in network order.
+ * @param userPrefix - Optional user prefix (up to 15 bytes) that will be prepended to all messages sent to this virtual socket (possibly through a channel). For text messages, this prefix is assumed to be valid UTF-8.
  * @returns The unique identifier of the newly created virtual socket, which can be used just like another socket.
  */
 export const createVirtualSocket = addon.createVirtualSocket;

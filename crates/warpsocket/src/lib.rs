@@ -28,6 +28,12 @@ use std::sync::Arc;
 type Sender = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>;
 type Bytes = Vec<u8>;
 
+#[derive(Clone, Debug)]
+struct UserPrefix {
+    len: u8,
+    data: [u8; 15],
+}
+
 macro_rules! convert_arg {
     ($cx:expr, $val:expr, Message) => {{
         js_value_to_message($cx, $val)
@@ -102,7 +108,7 @@ enum SocketEntry {
     // Virtual socket pointing to another socket ID (which may be actual or virtual)
     Virtual {
         target_socket_id: u64,
-        user_data: Option<i32>,
+        user_prefix: UserPrefix,
     },
 }
 
@@ -163,37 +169,38 @@ struct SocketRef<'a> {
     _guard: DashRef<'a, u64, SocketEntry>,
     // Direct references to the fields, tied to the guard's lifetime
     pub sender_mutex: &'a tokio::sync::Mutex<Sender>,
-    pub user_data: Option<i32>,
+    pub user_prefix: UserPrefix,
 }
 
 // Get a reference to an actual socket, following virtual sockets.
 // The returned SocketRef holds the DashMap guard to ensure the references are valid.
 fn get_socket(socket_id: u64) -> Option<SocketRef<'static>> {
     let mut current_id = socket_id;
-    let mut first_user_data: Option<i32> = None;
+    let mut first_user_prefix = UserPrefix { len: 0, data: [0; 15] };
 
     loop {
         if let Some(guard) = SOCKETS.get(&current_id) {
             match guard.value() {
                 SocketEntry::Actual { sender_mutex } => {
+                    // Found an actual socket - return SocketRef
                     // SAFETY: We're transmuting the lifetime to 'static, but the guard
                     // is moved into SocketRef and will keep the references valid.
                     // This is safe because the SocketRef owns the guard.
-                    let sender_mutex_ref = unsafe { std::mem::transmute(sender_mutex) };
+                    let sender_mutex_static = unsafe { std::mem::transmute(sender_mutex) };
                     
                     return Some(SocketRef {
-                        sender_mutex: sender_mutex_ref,
-                        user_data: first_user_data,
+                        sender_mutex: sender_mutex_static,
+                        user_prefix: first_user_prefix,
                         _guard: guard,
                     });
                 }
-                SocketEntry::Virtual { target_socket_id, user_data } => {
-                    if first_user_data.is_none() {
-                        first_user_data = *user_data;
+                SocketEntry::Virtual { target_socket_id, user_prefix } => {
+                    // Store the first non-empty user prefix we encounter
+                    if first_user_prefix.len == 0 && user_prefix.len > 0 {
+                        first_user_prefix = user_prefix.clone();
                     }
-                    // Drop current guard before following the chain
                     current_id = *target_socket_id;
-                    // loop continues
+                    // Continue following the chain
                 }
             }
         } else {
@@ -202,34 +209,34 @@ fn get_socket(socket_id: u64) -> Option<SocketRef<'static>> {
     }
 }
 
-// Helper function to send a message to a single socket, handling user data attachment
+// Helper function to send a message to a single socket, handling user prefix attachment
 async fn send_to_socket(socket_id: u64, message: &Message) -> bool {
     if let Some(s) = get_socket(socket_id) {
-        let final_message = if let Some(user_data) = s.user_data {
-            // Include user data
-            match message {
-                // Text: assume JSON, add _vsud key
-                Message::Text(text) => {
-                    if !text.starts_with('{') || !text.ends_with('}') {
-                        eprintln!(
-                            "To attach the socket id to a text message, it must be a JSON object, not: {}",
-                            text
-                        );
-                    }
-                    if text.find('"').is_some() {
-                        Message::Text(format!("{{\"_vsud\":{},{}", user_data, &text[1..]))
-                    } else {
-                        // Empty JSON object
-                        Message::Text(format!("{{\"_vsud\":{}}}", user_data))
+        let final_message = if s.user_prefix.len > 0 {
+            // Always prefix the user data, regardless of message type
+            let (original_data, is_text) = match message {
+                Message::Text(text) => (text.as_bytes(), true),
+                Message::Binary(data) => (data.as_slice(), false),
+                other => return { // Pass through other message types unchanged
+                    let mut sender = s.sender_mutex.lock().await;
+                    match sender.send(other.clone()).await {
+                        Ok(_) => true,
+                        Err(e) => { println!("Send failed: {}", e); false }
                     }
                 }
-                // Binary: prefix i32 bytes in network order
-                Message::Binary(data) => {
-                    let mut prefixed = user_data.to_be_bytes().to_vec();
-                    prefixed.extend_from_slice(data);
-                    Message::Binary(prefixed)
-                }
-                _ => message.clone(),
+            };
+            
+            // Create prefixed data
+            let prefix_bytes = &s.user_prefix.data[..s.user_prefix.len as usize];
+            let mut prefixed_data = Vec::with_capacity(prefix_bytes.len() + original_data.len());
+            prefixed_data.extend_from_slice(prefix_bytes);
+            prefixed_data.extend_from_slice(original_data);
+            
+            if is_text {
+                // For text messages, assume the result is valid UTF-8 as specified
+                Message::Text(String::from_utf8_lossy(&prefixed_data).into_owned())
+            } else {
+                Message::Binary(prefixed_data)
             }
         } else {
             message.clone()
@@ -495,11 +502,25 @@ fn has_subscription(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 
 fn create_virtual_socket(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let target_socket_id = read_arg!(&mut cx, 0, u64);
-    let user_data: Option<i32> = read_arg_opt!(&mut cx, 1, i32);
+    let user_prefix_opt = read_optional_bytes(&mut cx, 1)?;
+    
+    let user_prefix = if let Some(prefix_data) = user_prefix_opt {
+        if prefix_data.len() > 15 {
+            return cx.throw_error("User prefix cannot exceed 15 bytes");
+        }
+        let mut prefix = UserPrefix {
+            len: prefix_data.len() as u8,
+            data: [0; 15],
+        };
+        prefix.data[..prefix_data.len()].copy_from_slice(&prefix_data);
+        prefix
+    } else {
+        UserPrefix { len: 0, data: [0; 15] } // Empty prefix
+    };
     
     let virtual_socket_id = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    SOCKETS.insert(virtual_socket_id, SocketEntry::Virtual { target_socket_id, user_data });
+    SOCKETS.insert(virtual_socket_id, SocketEntry::Virtual { target_socket_id, user_prefix });
     
     Ok(cx.number(virtual_socket_id as f64))
 }
@@ -899,7 +920,7 @@ fn cleanup_disconnected_connections() {
     // Clean up virtual sockets that point to non-existent actual sockets
     SOCKETS.retain(|_key, entry| {
         match entry {
-            SocketEntry::Virtual { target_socket_id, user_data: _ } => get_socket(*target_socket_id).is_some(),
+            SocketEntry::Virtual { target_socket_id, .. } => get_socket(*target_socket_id).is_some(),
             SocketEntry::Actual { .. } => true,
         }
     });
