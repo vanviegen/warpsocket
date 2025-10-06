@@ -11,7 +11,14 @@ const {
     setKeyIf
 } = require('warpsocket');
 
-// Most E2E tests run with threads: 0 so this runs on the main thread.
+// Store the workerArg passed to handleStart for testing
+let startupArg = null;
+
+function handleStart(workerArg) {
+    console.log(`Worker handleStart called with:`, workerArg);
+    startupArg = workerArg;
+}
+
 function handleOpen() {
     return true;
 }
@@ -22,6 +29,9 @@ function handleTextMessage(data, socketId) {
     try { msg = JSON.parse(text); } catch { return; }
 
     switch (msg.type) {
+        case 'getStartupArg':
+            send(socketId, JSON.stringify({ type: 'startupArg', arg: startupArg }));
+            break;
         case 'sub':
             const subResult = subscribe(msg.socketId || socketId, msg.channel);
             // subResult is now an array of newly subscribed socket IDs
@@ -119,7 +129,12 @@ function handleTextMessage(data, socketId) {
             // small jitter to avoid synchronized responses
             const jitter = Math.floor(Math.random() * 5);
             setTimeout(() => {
-                send(socketId, JSON.stringify({ type: 'whoami', pid: process.pid, wid: globalThis.__workerId }));
+                send(socketId, JSON.stringify({ 
+                    type: 'whoami', 
+                    pid: process.pid, 
+                    wid: globalThis.__workerId,
+                    startupArg: startupArg 
+                }));
             }, jitter);
             break;
         case 'error':
@@ -135,4 +150,4 @@ function handleTextMessage(data, socketId) {
     }
 }
 
-module.exports = { handleOpen, handleTextMessage };
+module.exports = { handleStart, handleOpen, handleTextMessage };

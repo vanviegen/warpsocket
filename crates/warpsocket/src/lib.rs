@@ -287,7 +287,6 @@ fn start(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 
 fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let worker_obj = read_arg!(&mut cx, 0, JsObject);
-
     let text_message_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleTextMessage")?.map(|f| Arc::new(f.root(&mut cx)));
     let binary_message_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleBinaryMessage")?.map(|f| Arc::new(f.root(&mut cx)));
     let close_handler = worker_obj.get_opt::<JsFunction, _, _>(&mut cx, "handleClose")?.map(|f| Arc::new(f.root(&mut cx)));

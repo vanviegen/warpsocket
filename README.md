@@ -109,11 +109,11 @@ Notes:
 - Calling `start` without `workerPath` will only work if `start` was already
   called earlier with a `workerPath`.
 
-**Signature:** `(options: { bind: string; workerPath?: string; threads?: number; }) => Promise<void>`
+**Signature:** `(options: { bind: string; workerPath?: string; threads?: number; workerArg?: any; }) => Promise<void>`
 
 **Parameters:**
 
-- `options: { bind: string, workerPath?: string, threads?: number }` - - Configuration object:
+- `options: { bind: string, workerPath?: string, threads?: number, workerArg?: any }` - - Configuration object:
 - bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080").
 - workerPath: Optional. Path (absolute or relative to process.cwd()) to the
  worker JavaScript module to load in threads. If provided,
@@ -126,6 +126,10 @@ Notes:
 integer is provided, that number of Node.js `Worker` threads
 are created and set up to handle WebSocket events. When omitted,
 defaults to the number of CPU cores or 4, whichever is higher.
+Minimum value is 1 - the worker monitoring system requires at least one worker.
+- workerArg: Optional. Argument to pass to the handleStart() method of
+worker modules, if they implement it. This allows passing
+initialization data or configuration to workers.
 
 **Returns:** A Promise that resolves after worker threads (if any) have been
 started and the native addon has been instructed to bind to the
@@ -163,6 +167,13 @@ already subscribed (and had their reference count incremented) are not included.
 
 Interface that worker threads must implement to handle WebSocket events.
 All handler methods are optional - if not provided, the respective functionality will be unavailable.
+
+#### workerInterface.handleStart · member
+
+Called when the worker is starting up, before registering with the native addon.
+This allows for initialization logic that needs to run before handling WebSocket events.
+
+**Type:** `(workerArg?: any) => void`
 
 #### workerInterface.handleOpen · member
 

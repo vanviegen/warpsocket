@@ -14,6 +14,7 @@ async function spawnServer(opts = {}) {
         PORT: String(port),
         WORKER_PATH: opts.workerPath || path.resolve('test/fixtures/test-worker.js'),
         THREADS: "threads" in opts ? JSON.stringify(opts.threads) : "1",
+        WORKER_ARG: opts.workerArg ? JSON.stringify(opts.workerArg) : undefined,
         RUST_LOG: process.env.RUST_LOG || 'warn'
     },
     stdio: ['ignore', 'inherit', 'inherit']

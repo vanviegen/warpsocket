@@ -25,6 +25,13 @@ declare module "warpsocket/addon-loader" {
 */
 export interface WorkerInterface {
     /**
+    * Called when the worker is starting up, before registering with the native addon.
+    * This allows for initialization logic that needs to run before handling WebSocket events.
+    * @param workerArg - Optional argument passed from the start() function's workerArg option.
+    */
+    handleStart?(workerArg?: any): void;
+    
+    /**
     * Handles new WebSocket connections and can reject them. If not provided, all connections are accepted.
     * @param socketId - The unique identifier of the WebSocket connection.
     * @param ip - The client's IP address.
@@ -59,25 +66,35 @@ const workers = new Map<number, {worker: Worker, lastSeen: number}>();
 
 // Worker monitoring state
 const WORKER_TIMEOUT_MS = 3000; // 3 seconds timeout
+let monitoringInterval: NodeJS.Timeout | null = null;
 
 /*
 * Start the worker monitoring system that pings workers and terminates hanging ones.
 */
-setInterval(() => {
-    const now = Date.now();
+function startMonitoring() {
+    if (monitoringInterval) return; // Already running
+    
+    monitoringInterval = setInterval(() => {
+        const now = Date.now();
 
-    for (const [workerId, worker] of workers) {
-        const timeSinceLastSeen = now - worker.lastSeen;
-        if (timeSinceLastSeen > WORKER_TIMEOUT_MS) {
-            addon.deregisterWorkerThread(workerId);
-            worker.worker.terminate();
-            workers.delete(workerId);
+        for (const [workerId, worker] of workers) {
+            const timeSinceLastSeen = now - worker.lastSeen;
+            if (timeSinceLastSeen > WORKER_TIMEOUT_MS) {
+                addon.deregisterWorkerThread(workerId);
+                worker.worker.terminate();
+                workers.delete(workerId);
+            }
+
+            worker.worker.postMessage({ type: '__ping', timestamp: now });
         }
-
-        worker.worker.postMessage({ type: '__ping', timestamp: now });
-    }
-}, 500); // Check twice per second
-
+        
+        // Stop monitoring if no workers left
+        if (workers.size === 0) {
+            clearInterval(monitoringInterval!);
+            monitoringInterval = null;
+        }
+    }, 500); // Check twice per second
+}
 
 /** 
  * Starts a WebSocket server bound to the given address and (optionally)
@@ -103,6 +120,10 @@ setInterval(() => {
  *              integer is provided, that number of Node.js `Worker` threads
  *              are created and set up to handle WebSocket events. When omitted,
  *              defaults to the number of CPU cores or 4, whichever is higher.
+ *              Minimum value is 1 - the worker monitoring system requires at least one worker.
+ *   - workerArg: Optional. Argument to pass to the handleStart() method of
+ *                worker modules, if they implement it. This allows passing
+ *                initialization data or configuration to workers.
  *
  * @returns A Promise that resolves after worker threads (if any) have been
  *          started and the native addon has been instructed to bind to the
@@ -110,19 +131,19 @@ setInterval(() => {
  *
  * @throws If `options` is missing or `options.bind` is not a string.
  */
-export async function start(options: { bind: string, workerPath?: string, threads?: number }): Promise<void> {
+export async function start(options: { bind: string, workerPath?: string, threads?: number, workerArg?: any }): Promise<void> {
     if (!options || typeof options.bind !== 'string') {
         throw new Error('options.bind (string) is required');
     }
     if (options.workerPath) {
-        await spawnWorkers(options.workerPath, options.threads);
+        await spawnWorkers(options.workerPath, options.threads, options.workerArg);
     }
 
     addon.start(options.bind);
 }
 
 const BOOTSTRAP_WORKER = `
-const { workerData: workerModulePath, parentPort } = require('node:worker_threads');
+const { workerData, parentPort } = require('node:worker_threads');
 const addon = require('warpsocket/addon-loader');
 
 // Handle ping messages from main thread
@@ -133,18 +154,24 @@ parentPort.on('message', (msg) => {
 });
 
 (async () => {
-    const workerModule = await import(workerModulePath);
+    const workerModule = await import(workerData.workerModulePath);
+    
+    // Call handleStart if it exists, passing workerArg
+    if (typeof workerModule.handleStart === 'function') {
+        workerModule.handleStart(workerData.workerArg);
+    }
+    
     const workerId = addon.registerWorkerThread(workerModule);
     console.log('Worker bootstrap: registered with workerId', workerId);
     parentPort.postMessage({ type: 'registered', workerId });
 })();
 `;
 
-function spawnWorker(workerModulePath: string, running=false): Promise<void> { 
+function spawnWorker(workerModulePath: string, workerArg?: any, running=false): Promise<void> { 
     return new Promise<void>((resolve, reject) => {
         const w = new Worker(BOOTSTRAP_WORKER, {
             eval: true,
-            workerData: workerModulePath
+            workerData: { workerModulePath, workerArg }
         });
 
         let workerId: number;
@@ -154,6 +181,7 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
                 workerId = (msg as any).workerId;
                 workers.set(workerId, {worker: w, lastSeen: Date.now()});
                 console.log(`Worker ${workerId} registered`);
+                startMonitoring(); // Start monitoring when we have workers
                 running = true;
                 resolve();
             } else if (msg && (msg as any).type === '__pong') {
@@ -166,12 +194,13 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
         });
 
         w.on('exit', (code) => {
+            if (!workers.has(workerId)) return;
             console.error('warpsocket: worker thread exited with code', code);
             workers.delete(workerId);
             addon.deregisterWorkerThread(workerId);
             if (running) {
                 // Start a replacement worker
-                spawnWorker(workerModulePath, true);
+                spawnWorker(workerModulePath, workerArg, true);
             } else {
                 reject(new Error(`Could not start worker`));
             }
@@ -180,16 +209,16 @@ function spawnWorker(workerModulePath: string, running=false): Promise<void> {
     });
 }
 
-async function spawnWorkers(workerModulePath: string, threads?: number): Promise<void> {
+async function spawnWorkers(workerModulePath: string, threads?: number, workerArg?: any): Promise<void> {
     if (!pathMod.isAbsolute(workerModulePath)) {
         workerModulePath = pathMod.resolve(process.cwd(), workerModulePath);
     }
 
-    const threadCount = threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(0, 0|threads);
+    const threadCount = threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(1, 0|threads);
 
     const promises = [];
     for (let i = 0; i < threadCount; i++) {
-        promises.push(spawnWorker(workerModulePath));
+        promises.push(spawnWorker(workerModulePath, workerArg));
     }
     await Promise.all(promises);
 }
