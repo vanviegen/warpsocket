@@ -7,6 +7,15 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[lints.clippy]
+# Catch common async deadlock patterns
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+
+# Allow some common patterns to reduce noise
+match_like_matches_macro = "allow"
+needless_return = "allow"
+
 [dependencies]
 neon = "1.1"
 tokio = { version = "1.0", features = ["full"] }

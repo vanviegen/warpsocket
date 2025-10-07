@@ -99,35 +99,26 @@ The following is auto-generated from `src/index.cts`:
 
 ### start · function
 
-Starts a WebSocket server bound to the given address and (optionally)
-spawns worker threads that receive and handle WebSocket events.
+Starts a WebSocket server bound to the given address and spawns worker threads
+that handle WebSocket events.
 
-Notes:
-- Multiple servers can be started concurrently on different addresses.
-  Servers share global server state (channels, tokens, subscriptions, etc.)
-  and the same worker pool.
-- Calling `start` without `workerPath` will only work if `start` was already
-  called earlier with a `workerPath`.
-
-**Signature:** `(options: { bind: string; workerPath?: string; threads?: number; workerArg?: any; }) => Promise<void>`
+**Signature:** `(options: { bind: string | string[]; workerPath?: string; threads?: number; workerArg?: any; }) => Promise<void>`
 
 **Parameters:**
 
-- `options: { bind: string, workerPath?: string, threads?: number, workerArg?: any }` - - Configuration object:
-- bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080").
-- workerPath: Optional. Path (absolute or relative to process.cwd()) to the
- worker JavaScript module to load in threads. If provided,
- the module will be imported in each worker thread and any
- exported handlers will be registered with the native addon.
- Worker modules may export any subset of the `WorkerInterface`
- handlers. If `threads` is 0, the module will be registered
- on the main thread and no worker threads will be spawned.
-- threads: Optional. Number of worker threads to spawn. When a positive
+- `options: { bind: string | string[], workerPath?: string, threads?: number, workerArg?: any }` - - Configuration object:
+* bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080"),
+or an array of such strings to bind multiple addresses.
+* workerPath: Required. Path (absolute or relative to process.cwd()) to the
+ worker JavaScript module. This module will be imported in each
+ worker thread and its exported handlers will be registered with
+ the native addon. Worker modules may export any subset of the
+ `WorkerInterface` handlers.
+* threads: Optional. Number of worker threads to spawn. When a positive
 integer is provided, that number of Node.js `Worker` threads
 are created and set up to handle WebSocket events. When omitted,
 defaults to the number of CPU cores or 4, whichever is higher.
-Minimum value is 1 - the worker monitoring system requires at least one worker.
-- workerArg: Optional. Argument to pass to the handleStart() method of
+* workerArg: Optional. Argument to pass to the handleStart() method of
 worker modules, if they implement it. This allows passing
 initialization data or configuration to workers.
 
@@ -137,7 +128,8 @@ address. The Promise rejects if worker initialization fails.
 
 **Throws:**
 
-- If `options` is missing or `options.bind` is not a string.
+- If `options` is or the `bind` and `workerPath` properties are 
+missing or invalid, or if already started.
 
 ### unsubscribe · function
 

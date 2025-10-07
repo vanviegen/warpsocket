@@ -80,9 +80,11 @@ function startMonitoring() {
         for (const [workerId, worker] of workers) {
             const timeSinceLastSeen = now - worker.lastSeen;
             if (timeSinceLastSeen > WORKER_TIMEOUT_MS) {
+                console.error(`warpsocket: worker ${workerId} unresponsive for ${timeSinceLastSeen}ms, terminating`);
+                workers.delete(workerId);
                 addon.deregisterWorkerThread(workerId);
                 worker.worker.terminate();
-                workers.delete(workerId);
+                spawnWorker(); // Start a replacement worker
             }
 
             worker.worker.postMessage({ type: '__ping', timestamp: now });
@@ -96,32 +98,26 @@ function startMonitoring() {
     }, 500); // Check twice per second
 }
 
+let workerData: {workerPath: string, workerArg: any} | undefined;
+
+
 /** 
- * Starts a WebSocket server bound to the given address and (optionally)
- * spawns worker threads that receive and handle WebSocket events.
- *
- * Notes:
- * - Multiple servers can be started concurrently on different addresses.
- *   Servers share global server state (channels, tokens, subscriptions, etc.)
- *   and the same worker pool.
- * - Calling `start` without `workerPath` will only work if `start` was already
- *   called earlier with a `workerPath`. 
+ * Starts a WebSocket server bound to the given address and spawns worker threads
+ * that handle WebSocket events.
  *
  * @param options - Configuration object:
- *   - bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080").
- *   - workerPath: Optional. Path (absolute or relative to process.cwd()) to the
- *                 worker JavaScript module to load in threads. If provided,
- *                 the module will be imported in each worker thread and any
- *                 exported handlers will be registered with the native addon.
- *                 Worker modules may export any subset of the `WorkerInterface`
- *                 handlers. If `threads` is 0, the module will be registered
- *                 on the main thread and no worker threads will be spawned.
- *   - threads: Optional. Number of worker threads to spawn. When a positive
+ *   * bind: Required. Address string to bind the server to (e.g. "127.0.0.1:8080"),
+ *           or an array of such strings to bind multiple addresses.
+ *   * workerPath: Required. Path (absolute or relative to process.cwd()) to the
+ *                 worker JavaScript module. This module will be imported in each
+ *                 worker thread and its exported handlers will be registered with
+ *                 the native addon. Worker modules may export any subset of the
+ *                 `WorkerInterface` handlers.
+ *   * threads: Optional. Number of worker threads to spawn. When a positive
  *              integer is provided, that number of Node.js `Worker` threads
  *              are created and set up to handle WebSocket events. When omitted,
  *              defaults to the number of CPU cores or 4, whichever is higher.
- *              Minimum value is 1 - the worker monitoring system requires at least one worker.
- *   - workerArg: Optional. Argument to pass to the handleStart() method of
+ *   * workerArg: Optional. Argument to pass to the handleStart() method of
  *                worker modules, if they implement it. This allows passing
  *                initialization data or configuration to workers.
  *
@@ -129,17 +125,41 @@ function startMonitoring() {
  *          started and the native addon has been instructed to bind to the
  *          address. The Promise rejects if worker initialization fails.
  *
- * @throws If `options` is missing or `options.bind` is not a string.
+ * @throws If `options` is or the `bind` and `workerPath` properties are 
+ *         missing or invalid, or if already started.
  */
-export async function start(options: { bind: string, workerPath?: string, threads?: number, workerArg?: any }): Promise<void> {
-    if (!options || typeof options.bind !== 'string') {
-        throw new Error('options.bind (string) is required');
+
+export async function start(options: { bind: string | string[], workerPath?: string, threads?: number, workerArg?: any }): Promise<void> {
+    if (workerData) {
+        throw new Error('already started');
     }
-    if (options.workerPath) {
-        await spawnWorkers(options.workerPath, options.threads, options.workerArg);
+    if (!options || !options.bind || !options.workerPath) {
+        throw new Error('options.bind and options.workerPath are required');
     }
 
-    addon.start(options.bind);
+    let {bind, workerPath, workerArg, threads} = options;
+    if (!pathMod.isAbsolute(workerPath)) {
+        workerPath = pathMod.resolve(process.cwd(), workerPath);
+    }
+    workerData = {workerPath, workerArg};
+
+    threads = threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(1, 0|threads);
+
+    // Start a single worker first.. allow it to fail and throw before starting more
+    await spawnWorker();
+
+    // Now start and await the rest in parallel
+    const promises = [];
+    for (let i = 1; i < threads; i++) {
+        promises.push(spawnWorker());
+    }
+    await Promise.all(promises);
+
+    if (Array.isArray(bind)) {
+        for (const b of bind) addon.start(b);
+    } else {
+        addon.start(bind);
+    }
 }
 
 const BOOTSTRAP_WORKER = `
@@ -154,7 +174,7 @@ parentPort.on('message', (msg) => {
 });
 
 (async () => {
-    const workerModule = await import(workerData.workerModulePath);
+    const workerModule = await import(workerData.workerPath);
     
     // Call handleStart if it exists, passing workerArg
     if (typeof workerModule.handleStart === 'function') {
@@ -167,11 +187,12 @@ parentPort.on('message', (msg) => {
 })();
 `;
 
-function spawnWorker(workerModulePath: string, workerArg?: any, running=false): Promise<void> { 
+function spawnWorker(): Promise<void> { 
     return new Promise<void>((resolve, reject) => {
+        let running = false;
         const w = new Worker(BOOTSTRAP_WORKER, {
             eval: true,
-            workerData: { workerModulePath, workerArg }
+            workerData
         });
 
         let workerId: number;
@@ -200,27 +221,13 @@ function spawnWorker(workerModulePath: string, workerArg?: any, running=false): 
             addon.deregisterWorkerThread(workerId);
             if (running) {
                 // Start a replacement worker
-                spawnWorker(workerModulePath, workerArg, true);
+                spawnWorker();
             } else {
                 reject(new Error(`Could not start worker`));
             }
         });
 
     });
-}
-
-async function spawnWorkers(workerModulePath: string, threads?: number, workerArg?: any): Promise<void> {
-    if (!pathMod.isAbsolute(workerModulePath)) {
-        workerModulePath = pathMod.resolve(process.cwd(), workerModulePath);
-    }
-
-    const threadCount = threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(1, 0|threads);
-
-    const promises = [];
-    for (let i = 0; i < threadCount; i++) {
-        promises.push(spawnWorker(workerModulePath, workerArg));
-    }
-    await Promise.all(promises);
 }
 
 /** 

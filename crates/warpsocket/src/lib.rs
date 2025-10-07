@@ -3,13 +3,11 @@ use std::collections::{HashMap};
 use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::time;
-use http::StatusCode;
 use tokio_tungstenite::{
-    accept_async,
     accept_hdr_async,
     tungstenite::{
         protocol::Message,
-        handshake::server::{Request, Response, ErrorResponse},
+        handshake::server::{Request, Response},
         protocol::{CloseFrame, frame::coding::CloseCode},
     },
 };
@@ -17,7 +15,6 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use dashmap::mapref::one::Ref as DashRef;
 use lazy_static::lazy_static;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
@@ -103,7 +100,7 @@ macro_rules! read_arg_opt {
 enum SocketEntry {
     // Actual WebSocket connection with sender
     Actual {
-        sender_mutex: tokio::sync::Mutex<Sender>,
+        sender_mutex: Arc<tokio::sync::Mutex<Sender>>,
     },
     // Virtual socket pointing to another socket ID (which may be actual or virtual)
     Virtual {
@@ -151,7 +148,7 @@ where
 {
     if let Some(worker_ref) = WORKERS.get(&worker_id) {
         let channel = worker_ref.channel.clone();
-        drop(worker_ref); // Release the DashMap reference before the potentially blocking call
+        drop(worker_ref); // Release the DashMap reference before the send
 
         channel.send(js_callback);
         true
@@ -161,38 +158,18 @@ where
 }
 
 
-
-
-
-struct SocketRef<'a> {
-    // Hold the DashMap guard to keep the underlying value alive
-    _guard: DashRef<'a, u64, SocketEntry>,
-    // Direct references to the fields, tied to the guard's lifetime
-    pub sender_mutex: &'a tokio::sync::Mutex<Sender>,
-    pub user_prefix: UserPrefix,
-}
-
-// Get a reference to an actual socket, following virtual sockets.
-// The returned SocketRef holds the DashMap guard to ensure the references are valid.
-fn get_socket(socket_id: u64) -> Option<SocketRef<'static>> {
+// Get sender and user prefix for a socket, following virtual socket chains.
+// Returns owned values (Arc is cloned, UserPrefix is copied) so no lifetime issues.
+fn get_socket(socket_id: u64) -> Option<(Arc<tokio::sync::Mutex<Sender>>, UserPrefix)> {
     let mut current_id = socket_id;
     let mut first_user_prefix = UserPrefix { len: 0, data: [0; 15] };
 
-    loop {
+    for _ in 0..100 { // Prevent infinite loops from cycles (that should be impossible, but still..)
         if let Some(guard) = SOCKETS.get(&current_id) {
             match guard.value() {
                 SocketEntry::Actual { sender_mutex } => {
-                    // Found an actual socket - return SocketRef
-                    // SAFETY: We're transmuting the lifetime to 'static, but the guard
-                    // is moved into SocketRef and will keep the references valid.
-                    // This is safe because the SocketRef owns the guard.
-                    let sender_mutex_static = unsafe { std::mem::transmute(sender_mutex) };
-                    
-                    return Some(SocketRef {
-                        sender_mutex: sender_mutex_static,
-                        user_prefix: first_user_prefix,
-                        _guard: guard,
-                    });
+                    // Found an actual socket - clone Arc and return
+                    return Some((Arc::clone(sender_mutex), first_user_prefix));
                 }
                 SocketEntry::Virtual { target_socket_id, user_prefix } => {
                     // Store the first non-empty user prefix we encounter
@@ -207,50 +184,69 @@ fn get_socket(socket_id: u64) -> Option<SocketRef<'static>> {
             return None;
         }
     }
+    
+    // Max depth exceeded
+    eprintln!("Max virtual socket chain depth exceeded for socket_id={}", socket_id);
+    None
+}
+
+// Helper function to send a close frame to a socket
+async fn send_close_frame(socket_id: u64, reason: String) {
+    if let Some((sender_mutex, _)) = get_socket(socket_id) {
+        let mut sender = sender_mutex.lock().await;
+        let _ = sender.send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Error,
+            reason: reason.into(),
+        }))).await;
+    }
 }
 
 // Helper function to send a message to a single socket, handling user prefix attachment
 async fn send_to_socket(socket_id: u64, message: &Message) -> bool {
-    if let Some(s) = get_socket(socket_id) {
-        let final_message = if s.user_prefix.len > 0 {
-            // Always prefix the user data, regardless of message type
-            let (original_data, is_text) = match message {
-                Message::Text(text) => (text.as_bytes(), true),
-                Message::Binary(data) => (data.as_slice(), false),
-                other => return { // Pass through other message types unchanged
-                    let mut sender = s.sender_mutex.lock().await;
-                    match sender.send(other.clone()).await {
-                        Ok(_) => true,
-                        Err(e) => { println!("Send failed: {}", e); false }
-                    }
-                }
-            };
-            
-            // Create prefixed data
-            let prefix_bytes = &s.user_prefix.data[..s.user_prefix.len as usize];
-            let mut prefixed_data = Vec::with_capacity(prefix_bytes.len() + original_data.len());
-            prefixed_data.extend_from_slice(prefix_bytes);
-            prefixed_data.extend_from_slice(original_data);
-            
-            if is_text {
-                // For text messages, assume the result is valid UTF-8 as specified
-                Message::Text(String::from_utf8_lossy(&prefixed_data).into_owned())
-            } else {
-                Message::Binary(prefixed_data)
+    // Get sender and user prefix (already cloned/copied, no guards held)
+    let (sender_mutex, user_prefix) = match get_socket(socket_id) {
+        Some(result) => result,
+        None => return false,
+    };
+    
+    // Build the message to send
+    let final_message = if user_prefix.len > 0 {
+        // Always prefix the user data, regardless of message type
+        let (original_data, is_text) = match message {
+            Message::Text(text) => (text.as_bytes(), true),
+            Message::Binary(data) => (data.as_slice(), false),
+            other => {
+                // Pass through other message types unchanged
+                let mut sender = sender_mutex.lock().await;
+                return match sender.send(other.clone()).await {
+                    Ok(_) => true,
+                    Err(e) => { println!("Send failed: {}", e); false }
+                };
             }
-        } else {
-            message.clone()
         };
         
-        let mut sender = s.sender_mutex.lock().await;
-        if let Err(e) = sender.send(final_message).await {
-            println!("Send failed: {}", e);
-            false
+        // Create prefixed data
+        let prefix_bytes = &user_prefix.data[..user_prefix.len as usize];
+        let mut prefixed_data = Vec::with_capacity(prefix_bytes.len() + original_data.len());
+        prefixed_data.extend_from_slice(prefix_bytes);
+        prefixed_data.extend_from_slice(original_data);
+        
+        if is_text {
+            // For text messages, assume the result is valid UTF-8 as specified
+            Message::Text(String::from_utf8_lossy(&prefixed_data).into_owned())
         } else {
-            true
+            Message::Binary(prefixed_data)
         }
     } else {
+        message.clone()
+    };
+    
+    let mut sender = sender_mutex.lock().await;
+    if let Err(e) = sender.send(final_message).await {
+        println!("Send failed: {}", e);
         false
+    } else {
+        true
     }
 }
 
@@ -394,7 +390,7 @@ fn send(mut cx: FunctionContext) -> JsResult<JsNumber> {
 
 // Helper function to apply a subscription delta to a single socket-channel pair
 fn apply_subscription_delta(socket_id: u64, channel_name: &[u8], delta: i32) -> bool {
-    let mut channel = CHANNELS.entry(channel_name.to_vec()).or_insert_with(HashMap::new);
+    let mut channel = CHANNELS.entry(channel_name.to_vec()).or_default();
     
     if delta > 0 {
         // Adding subscriptions
@@ -529,15 +525,11 @@ fn delete_virtual_socket(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let expected_target_socket_id: Option<u64> = read_arg_opt!(&mut cx, 1, u64);
 
     let opt_pair = SOCKETS.remove_if(&virtual_socket_id, |_key,val| match val {
-        SocketEntry::Virtual { target_socket_id, .. } => expected_target_socket_id == None || expected_target_socket_id == Some(*target_socket_id),
+        SocketEntry::Virtual { target_socket_id, .. } => expected_target_socket_id.is_none() || expected_target_socket_id == Some(*target_socket_id),
         SocketEntry::Actual { .. } => false,
     });
 
-    Ok(cx.boolean(if let Some(..) = opt_pair {
-        true
-    } else {
-        false
-    }))
+    Ok(cx.boolean(opt_pair.is_some()))
 }
 
 // Must be called from the main thread for this js context
@@ -702,6 +694,7 @@ async fn start_server(listener: TcpListener) {
 }
 
 async fn handle_connection(stream: TcpStream) {
+    eprintln!("New connection from {:?}", stream.peer_addr());
     let peer_addr = stream.peer_addr().ok();
     
     // Select a worker for this connection using round-robin
@@ -717,96 +710,89 @@ async fn handle_connection(stream: TcpStream) {
     
     // Generate socket ID early so we can use it in the handshake callback
     let socket_id = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    eprintln!("socket_id={} assign to worker_id={}", socket_id, worker_id);
     
-    let accept_result = if let Some(handler) = &WORKERS.get(&worker_id).unwrap().open_handler {
-        // As 'handleOpen' is defined, we'll need setup a callback
-        
-        let callback = |req: &Request, response: Response| {        
-            // Extract client information
-            let client_ip = peer_addr.map(|addr| addr.ip().to_string()).unwrap_or_default();
-            
-            // Convert headers to a map
-            let mut headers_map = HashMap::new();
+    // Check for open_handler without holding the lock during accept
+    let open_handler = WORKERS.get(&worker_id).and_then(|w| w.open_handler.clone());
+    
+    let ws_stream = if let Some(handler) = open_handler {
+        // Capture headers during handshake for open_handler
+        let mut headers_map = HashMap::new();
+        let ws_stream = match accept_hdr_async(stream, |req: &Request, response: Response| {
             for (name, value) in req.headers() {
                 if let Ok(value_str) = value.to_str() {
                     headers_map.insert(name.as_str().to_string(), value_str.to_string());
                 }
             }
-            
-            let handler = Arc::clone(handler);
-            let client_ip_clone = client_ip.clone();
-            let headers_clone = headers_map.clone();
-            
-            // Use a blocking channel to get the result from the JS callback
-            let (tx, rx) = std::sync::mpsc::channel();
-            
-            let send_result = schedule_in_worker_main_thread(worker_id, move |mut cx| {
-                let callback = handler.to_inner(&mut cx);
-
-                let js_socket_id = cx.number(socket_id as f64);
-                let js_client_ip = cx.string(&client_ip_clone);
-
-                let headers_obj = cx.empty_object();
-                for (key, value) in headers_clone {
-                    let js_key = cx.string(&key);
-                    let js_value = cx.string(&value);
-                    headers_obj.set(&mut cx, js_key, js_value)?;
+            Ok(response)
+        }).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                if e.to_string() != "WebSocket protocol error: Handshake not finished" {
+                    eprintln!("WebSocket connection failed: {}", e);
                 }
-
-                let result = invoke_js_callback(&mut cx, callback, vec![
-                    js_socket_id.upcast(),
-                    js_client_ip.upcast(),
-                    headers_obj.upcast(),
-                ]);
-
-                let should_accept = match result {
-                    Some(value) => {
-                        if let Ok(boolean) = value.downcast::<JsBoolean, _>(&mut cx) {
-                            boolean.value(&mut cx)
-                        } else {
-                            true // Default to accepting if not a boolean
-                        }
-                    }
-                    None => false, // Reject on error
-                };
-
-                tx.send(should_accept).unwrap();
-                Ok(())
-            });
-            
-            if !send_result {
-                // Worker is dead or not found, reject the connection
-                let mut parts = response.into_parts().0;
-                parts.status = StatusCode::INTERNAL_SERVER_ERROR;
-                let error_response = ErrorResponse::from_parts(parts, Some("Worker unavailable".to_string()));
-                return Err(error_response);
-            }
-
-            // Wait for the JavaScript callback result
-            let should_accept = rx.recv().unwrap();
-            if should_accept {
-                return Ok(response);
-            } else {
-                let mut parts = response.into_parts().0;
-                parts.status = StatusCode::FORBIDDEN;
-                let error_response = ErrorResponse::from_parts(parts, Some("Connection rejected".to_string()));
-                return Err(error_response);
+                return;
             }
         };
         
-        accept_hdr_async(stream, callback).await
-    } else {
-        // Simple case, without accept callback
-        accept_async(stream).await
-    };
-    
-    let ws_stream = match accept_result {
-        Ok(ws_stream) => ws_stream,
-        Err(e) => {
-            if e.to_string() != "WebSocket protocol error: Handshake not finished" {
-                eprintln!("WebSocket connection failed: {}", e);
+        eprintln!("socket_id={} accepted=true", socket_id);
+        
+        // Call open_handler with captured headers
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let send_result = schedule_in_worker_main_thread(worker_id, move |mut cx| {
+            let callback = handler.to_inner(&mut cx);
+            let js_socket_id = cx.number(socket_id as f64);
+            let js_client_ip = cx.string(peer_addr.map(|addr| addr.ip().to_string()).unwrap_or_default());
+            
+            let headers_obj = cx.empty_object();
+            for (key, value) in headers_map {
+                let js_key = cx.string(&key);
+                let js_value = cx.string(&value);
+                headers_obj.set(&mut cx, js_key, js_value)?;
             }
+
+            let result = invoke_js_callback(&mut cx, callback, vec![
+                js_socket_id.upcast(),
+                js_client_ip.upcast(),
+                headers_obj.upcast(),
+            ]);
+
+            let should_accept = match result {
+                Some(value) => value.downcast::<JsBoolean, _>(&mut cx)
+                    .map(|b| b.value(&mut cx)).unwrap_or(true),
+                None => false,
+            };
+
+            let _ = tx.send(should_accept);
+            Ok(())
+        });
+        
+        let should_accept = send_result && 
+            tokio::time::timeout(Duration::from_secs(5), rx).await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or(false);
+        
+        if !should_accept {
+            eprintln!("socket_id={} rejected by open_handler", socket_id);
             return;
+        }
+        
+        ws_stream
+    } else {
+        // No open_handler, just accept without capturing headers
+        match tokio_tungstenite::accept_async(stream).await {
+            Ok(ws) => {
+                eprintln!("socket_id={} accepted=true", socket_id);
+                ws
+            }
+            Err(e) => {
+                if e.to_string() != "WebSocket protocol error: Handshake not finished" {
+                    eprintln!("WebSocket connection failed: {}", e);
+                }
+                return;
+            }
         }
     };
     
@@ -814,7 +800,7 @@ async fn handle_connection(stream: TcpStream) {
     
     // Store the WebSocket sender in global map
     SOCKETS.insert(socket_id, SocketEntry::Actual {
-        sender_mutex: tokio::sync::Mutex::new(ws_sender),
+        sender_mutex: Arc::new(tokio::sync::Mutex::new(ws_sender)),
     });
     
     // Handle incoming messages
@@ -845,11 +831,8 @@ async fn handle_connection(stream: TcpStream) {
             
             schedule_in_worker_main_thread(worker_id, move |mut cx| {
                 let callback = handler.to_inner(&mut cx);
-                
                 let js_socket_id = cx.number(socket_id as f64).upcast();
-
                 invoke_js_callback(&mut cx, callback, vec![js_socket_id]);
-
                 Ok(())
             });
         }
@@ -858,7 +841,7 @@ async fn handle_connection(stream: TcpStream) {
 
 async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message) -> bool {
     if let Some(worker_ref) = WORKERS.get(&worker_id) {
-        let opt_handler = match message {
+        let opt_handler = match &message {
             Message::Text(_) => &worker_ref.text_message_handler,
             Message::Binary(_) => &worker_ref.binary_message_handler,
             _ => &None
@@ -871,58 +854,54 @@ async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message)
                 let callback = handler.to_inner(&mut cx);
                 
                 let js_data = match message {
-                    Message::Text(text) => {
-                        cx.string(text).upcast::<JsValue>()
-                    }
-                    Message::Binary(data) => {
-                        create_js_buffer(&mut cx, &data)?.upcast::<JsValue>()
-                    }
-                    _ => cx.undefined().upcast::<JsValue>(), // Handle other message types
+                    Message::Text(text) => cx.string(text).upcast::<JsValue>(),
+                    Message::Binary(data) => create_js_buffer(&mut cx, &data)?.upcast::<JsValue>(),
+                    _ => cx.undefined().upcast::<JsValue>(),
                 };
                 
                 let js_socket_id = cx.number(socket_id as f64);
                 
-                invoke_js_callback(&mut cx, callback, vec![js_data,js_socket_id.upcast()]);
+                invoke_js_callback(&mut cx, callback, vec![js_data, js_socket_id.upcast()]);
                 
                 Ok(())
             });
             
             if !result {
-                // Send a proper WebSocket close frame before terminating
-                if let Some(socket_ref) = get_socket(socket_id) {
-                    let mut sender = socket_ref.sender_mutex.lock().await;
-                    let _ = sender.send(Message::Close(Some(CloseFrame {
-                        code: CloseCode::Error,
-                        reason: "Server worker unavailable".into(),
-                    }))).await;
-                }
-                
+                send_close_frame(socket_id, "Server worker unavailable".to_string()).await;
                 return false; // Signal that the connection should be terminated
             }
         }
         true // Continue processing messages
     } else {
-        // Send a proper WebSocket close frame before terminating
-        if let Some(socket_ref) = get_socket(socket_id) {
-            let mut sender = socket_ref.sender_mutex.lock().await;
-            let _ = sender.send(Message::Close(Some(CloseFrame {
-                code: CloseCode::Error,
-                reason: "Server worker is down".into(),
-            }))).await;
-        }
-        
+        send_close_frame(socket_id, "Server worker is down".to_string()).await;
         false // Terminate connection if worker doesn't exist
     }
 }
 
 fn cleanup_disconnected_connections() {
     // Clean up virtual sockets that point to non-existent actual sockets
-    SOCKETS.retain(|_key, entry| {
-        match entry {
-            SocketEntry::Virtual { target_socket_id, .. } => get_socket(*target_socket_id).is_some(),
-            SocketEntry::Actual { .. } => true,
+    // First collect the IDs to remove (can't call get_socket while retain holds locks)
+    let mut virtual_sockets_to_check: Vec<(u64, u64)> = Vec::new();
+    
+    // Collect all virtual sockets
+    for entry in SOCKETS.iter() {
+        if let SocketEntry::Virtual { target_socket_id, .. } = entry.value() {
+            virtual_sockets_to_check.push((*entry.key(), *target_socket_id));
         }
-    });
+    }
+    
+    // Now check which ones are invalid (without holding any locks)
+    let mut to_remove = Vec::new();
+    for (virtual_id, target_id) in virtual_sockets_to_check {
+        if get_socket(target_id).is_none() {
+            to_remove.push(virtual_id);
+        }
+    }
+    
+    // Remove invalid virtual sockets
+    for virtual_id in to_remove {
+        SOCKETS.remove(&virtual_id);
+    }
 
     // Cleanup subscribers pointing at non-existent sockets and channels without subscribers
     CHANNELS.retain(|_key, subscribers| {
