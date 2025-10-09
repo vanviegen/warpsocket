@@ -27,6 +27,7 @@ let opened = 0;
 let subAcked = 0;
 let acks = 0;
 let nextIndex = 0;
+let msgs = 0;
 
 function openOne(i: number): void {
   const ws = new WebSocket(`ws://${host}:${port+(i%16)}`);
@@ -53,6 +54,7 @@ function openOne(i: number): void {
         setImmediate(loop);
         return;
       }
+      msgs++;
     } catch {}
   });
 
@@ -78,7 +80,7 @@ async function openAll() {
 
 // Stats
 setInterval(() => {
-  console.log(`[perf-client] opened=${opened} subAck=${subAcked} acks=${acks}`);
+  console.log(`[perf-client] opened=${opened} subAck=${subAcked} acks=${acks} msg=${msgs}`);
 }, 10_000);
 
 openAll().catch((e) => {

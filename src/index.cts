@@ -29,7 +29,7 @@ export interface WorkerInterface {
     * This allows for initialization logic that needs to run before handling WebSocket events.
     * @param workerArg - Optional argument passed from the start() function's workerArg option.
     */
-    handleStart?(workerArg?: any): void;
+    handleStart?(workerArg?: any): Promise<void> | void;
     
     /**
     * Handles new WebSocket connections and can reject them. If not provided, all connections are accepted.
@@ -38,27 +38,27 @@ export interface WorkerInterface {
     * @param headers - HTTP headers from the WebSocket handshake request.
     * @returns true to accept the connection, false to reject it.
     */
-    handleOpen?(socketId: number, ip: string, headers: Record<string, string>): boolean;
+    handleOpen?(socketId: number, ip: string, headers: Record<string, string>): Promise<boolean> | boolean;
     
     /**
     * Handles incoming WebSocket text messages from clients.
     * @param data - The message data as a string.
     * @param socketId - The unique identifier of the WebSocket connection.
     */
-    handleTextMessage?(data: string, socketId: number): void;
+    handleTextMessage?(data: string, socketId: number): Promise<void> | void;
 
     /**
     * Handles incoming WebSocket binary messages from clients.
     * @param data - The message data as a Uint8Array.
     * @param socketId - The unique identifier of the WebSocket connection.
     */
-    handleBinaryMessage?(data: Uint8Array, socketId: number): void;
+    handleBinaryMessage?(data: Uint8Array, socketId: number): Promise<void> | void;
 
     /**
     * Handles WebSocket connection closures.
     * @param socketId - The unique identifier of the closed WebSocket connection.
     */
-    handleClose?(socketId: number): void;
+    handleClose?(socketId: number): Promise<void> | void;
 }
 
 // Internal map to keep Worker instances alive and allow termination
@@ -80,7 +80,7 @@ function startMonitoring() {
         for (const [workerId, worker] of workers) {
             const timeSinceLastSeen = now - worker.lastSeen;
             if (timeSinceLastSeen > WORKER_TIMEOUT_MS) {
-                console.error(`warpsocket: worker ${workerId} unresponsive for ${timeSinceLastSeen}ms, terminating`);
+                console.error(`WarpSocket worker ${workerId} unresponsive for ${timeSinceLastSeen}ms, terminating`);
                 workers.delete(workerId);
                 addon.deregisterWorkerThread(workerId);
                 worker.worker.terminate();
@@ -137,28 +137,29 @@ export async function start(options: { bind: string | string[], workerPath?: str
         throw new Error('options.bind and options.workerPath are required');
     }
 
-    let {bind, workerPath, workerArg, threads} = options;
-    if (!pathMod.isAbsolute(workerPath)) {
-        workerPath = pathMod.resolve(process.cwd(), workerPath);
+    if (!pathMod.isAbsolute(options.workerPath)) {
+        options.workerPath = pathMod.resolve(process.cwd(), options.workerPath);
     }
-    workerData = {workerPath, workerArg};
+    workerData = {workerPath: options.workerPath, workerArg: options.workerArg};
 
-    threads = threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(1, 0|threads);
+    options.threads = options.threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(1, 0|options.threads);
+
+    // console.log(`WarpSocket starting`, options);
 
     // Start a single worker first.. allow it to fail and throw before starting more
     await spawnWorker();
 
     // Now start and await the rest in parallel
     const promises = [];
-    for (let i = 1; i < threads; i++) {
+    for (let i = 1; i < options.threads; i++) {
         promises.push(spawnWorker());
     }
     await Promise.all(promises);
 
-    if (Array.isArray(bind)) {
-        for (const b of bind) addon.start(b);
+    if (Array.isArray(options.bind)) {
+        for (const b of options.bind) addon.start(b);
     } else {
-        addon.start(bind);
+        addon.start(options.bind);
     }
 }
 
@@ -178,11 +179,10 @@ parentPort.on('message', (msg) => {
     
     // Call handleStart if it exists, passing workerArg
     if (typeof workerModule.handleStart === 'function') {
-        workerModule.handleStart(workerData.workerArg);
+        await workerModule.handleStart(workerData.workerArg);
     }
     
     const workerId = addon.registerWorkerThread(workerModule);
-    console.log('Worker bootstrap: registered with workerId', workerId);
     parentPort.postMessage({ type: 'registered', workerId });
 })();
 `;
@@ -201,7 +201,7 @@ function spawnWorker(): Promise<void> {
             if (msg && (msg as any).type === 'registered') {
                 workerId = (msg as any).workerId;
                 workers.set(workerId, {worker: w, lastSeen: Date.now()});
-                console.log(`Worker ${workerId} registered`);
+                // console.log(`WarpSocket worker #${workerId} registered`);
                 startMonitoring(); // Start monitoring when we have workers
                 running = true;
                 resolve();
@@ -211,12 +211,12 @@ function spawnWorker(): Promise<void> {
         });
 
         w.on('error', (err) => {
-            console.error('warpsocket: worker thread error:', err);
+            console.error('WarpSocket worker thread error:', err);
         });
 
         w.on('exit', (code) => {
             if (!workers.has(workerId)) return;
-            console.error('warpsocket: worker thread exited with code', code);
+            console.error('WarpSocket worker thread exited with code', code);
             workers.delete(workerId);
             addon.deregisterWorkerThread(workerId);
             if (running) {
@@ -264,14 +264,15 @@ export const send = addon.send;
 export const subscribe = addon.subscribe;
 
 /**
- * Exactly the same as {@link subscribe}, only with a negative delta (defaulting to 1, which means a single unsubscribe, or a subscribe with delta -1).
+ * Exactly the same as `subscribe`, only with a negative delta (defaulting to 1, which means a single unsubscribe, or a subscribe with delta -1).
  */
 export function unsubscribe(socketIdOrChannelName: number | number[] | Uint8Array | ArrayBuffer | string | (number | Uint8Array | ArrayBuffer | string)[], channelName: Uint8Array | ArrayBuffer | string, delta: number = 1): number[] {
     return addon.subscribe(socketIdOrChannelName, channelName, -delta);
 }
 
 /** 
-* @deprecated Use subscribe(fromChannelName, toChannelName) instead.
+* **DEPRECATED:** Use subscribe(fromChannelName, toChannelName) instead.
+* 
 * Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber 
 * is already subscribed to the destination channel, their reference count will be incremented instead 
 * of creating duplicate subscriptions.

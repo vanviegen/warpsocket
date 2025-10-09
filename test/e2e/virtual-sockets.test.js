@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { createWebSocket, onceMessage, onceMessageOfType } = require('../helpers/testUtils.js');
+const { createWebSocket, onceMessageRaw, onceMessageOfType } = require('../helpers/testUtils.js');
 
 test('createVirtualSocket returns a new socket ID', async () => {
     const ws = await createWebSocket();
@@ -69,7 +69,7 @@ test('virtual socket with user prefix prefixes text messages', async () => {
     ws2.send(JSON.stringify({ type: 'pub', channel: 'test-prefix', data: 'hello' }));
     
     // The message should come back as binary with prefix prepended (because prefixing makes it binary)
-    const rawMessage = await onceMessage(ws1);
+    const rawMessage = await onceMessageRaw(ws1);
     // Check if it's a Buffer or ArrayBuffer
     assert.ok(rawMessage instanceof ArrayBuffer || Buffer.isBuffer(rawMessage));
     
@@ -102,7 +102,7 @@ test('virtual socket with user prefix prefixes binary messages', async () => {
     ws2.send(JSON.stringify({ type: 'pub', channel: 'test-binary-prefix', data: 'binary-test', binary: true }));
     
     // The message should come as binary with the user prefix prepended
-    const binaryMessage = await onceMessage(ws1);
+    const binaryMessage = await onceMessageRaw(ws1);
     assert.ok(binaryMessage instanceof ArrayBuffer);
     
     const receivedBytes = new Uint8Array(binaryMessage);

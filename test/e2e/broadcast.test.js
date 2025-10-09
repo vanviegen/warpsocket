@@ -13,8 +13,7 @@ test('broadcast to channel reaches subscribers (threads:0)', async () => {
   const received = onceMessage(b);
   a.send(JSON.stringify({ type: 'pub', channel: 'room', data: 'hello' }));
 
-  const msg = await received;
-  const parsed = JSON.parse(msg);
+  const parsed = await received;
   assert.equal(parsed.type, 'published');
   assert.equal(parsed.data, 'hello');
 
@@ -28,8 +27,7 @@ test('hasSubscriptions returns correct status', async () => {
 
   // Check channel has no subscriptions initially
   a.send(JSON.stringify({ type: 'hasSubscriptions', channel: 'test-room' }));
-  let msg = await onceMessage(a);
-  let parsed = JSON.parse(msg);
+  let parsed = await onceMessage(a);
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.channel, 'test-room');
   assert.equal(parsed.result, false);
@@ -40,8 +38,7 @@ test('hasSubscriptions returns correct status', async () => {
 
   // Check channel now has subscriptions
   a.send(JSON.stringify({ type: 'hasSubscriptions', channel: 'test-room' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.channel, 'test-room');
   assert.equal(parsed.result, true);
@@ -52,8 +49,7 @@ test('hasSubscriptions returns correct status', async () => {
 
   // Check channel still has subscriptions
   a.send(JSON.stringify({ type: 'hasSubscriptions', channel: 'test-room' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.channel, 'test-room');
   assert.equal(parsed.result, true);
@@ -66,8 +62,7 @@ test('hasSubscriptions returns correct status', async () => {
 
   // Check channel still has subscriptions (client a is still connected)
   a.send(JSON.stringify({ type: 'hasSubscriptions', channel: 'test-room' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.channel, 'test-room');
   assert.equal(parsed.result, true);
@@ -80,24 +75,21 @@ test('multiple subscriptions to same channel by same socket are reference counte
 
   // First subscription should be new
   a.send(JSON.stringify({ type: 'sub', channel: 'multi-sub' }));
-  let msg = await onceMessage(a);
-  let parsed = JSON.parse(msg);
+  let parsed = await onceMessage(a);
   assert.equal(parsed.type, 'subscribed');
   assert.equal(parsed.channel, 'multi-sub');
   assert.equal(parsed.isNew, true);
 
   // Second subscription to same channel should increment ref count
   a.send(JSON.stringify({ type: 'sub', channel: 'multi-sub' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'subscribed');
   assert.equal(parsed.channel, 'multi-sub');
   assert.equal(parsed.isNew, false);
 
   // Third subscription
   a.send(JSON.stringify({ type: 'sub', channel: 'multi-sub' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'subscribed');
   assert.equal(parsed.channel, 'multi-sub');
   assert.equal(parsed.isNew, false);
@@ -106,8 +98,7 @@ test('multiple subscriptions to same channel by same socket are reference counte
   const received = onceMessage(a);
   a.send(JSON.stringify({ type: 'pub', channel: 'multi-sub', data: 'test-multi' }));
 
-  const pubMsg = await received;
-  parsed = JSON.parse(pubMsg);
+  parsed = await received;
   assert.equal(parsed.type, 'published');
   assert.equal(parsed.data, 'test-multi');
 
@@ -121,8 +112,7 @@ test('unsubscribe decrements reference count and removes only when count reaches
   // Subscribe three times
   for (let i = 0; i < 3; i++) {
     a.send(JSON.stringify({ type: 'sub', channel: 'ref-count' }));
-    const msg = await onceMessage(a);
-    const parsed = JSON.parse(msg);
+    const parsed = await onceMessage(a);
     assert.equal(parsed.type, 'subscribed');
     assert.equal(parsed.channel, 'ref-count');
     assert.equal(parsed.isNew, i === 0); // First one is new, others are ref count increases
@@ -134,32 +124,28 @@ test('unsubscribe decrements reference count and removes only when count reaches
 
   // First unsubscribe should decrement ref count, not remove
   a.send(JSON.stringify({ type: 'unsub', channel: 'ref-count' }));
-  let msg = await onceMessage(a);
-  let parsed = JSON.parse(msg);
+  let parsed = await onceMessage(a);
   assert.equal(parsed.type, 'unsubscribed');
   assert.equal(parsed.channel, 'ref-count');
   assert.equal(parsed.wasRemoved, false);
 
   // Second unsubscribe should still not remove
   a.send(JSON.stringify({ type: 'unsub', channel: 'ref-count' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'unsubscribed');
   assert.equal(parsed.channel, 'ref-count');
   assert.equal(parsed.wasRemoved, false);
 
   // Third unsubscribe should remove
   a.send(JSON.stringify({ type: 'unsub', channel: 'ref-count' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'unsubscribed');
   assert.equal(parsed.channel, 'ref-count');
   assert.equal(parsed.wasRemoved, true);
 
   // Channel should still have subscriptions (b is still subscribed)
   a.send(JSON.stringify({ type: 'hasSubscriptions', channel: 'ref-count' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'hasSubscriptions');
   assert.equal(parsed.result, true);
 
@@ -183,8 +169,7 @@ test('copySubscriptions increments reference counts and returns new socket IDs',
 
   // Copy subscriptions from channel1 to channel2
   a.send(JSON.stringify({ type: 'copySubs', fromChannel: 'channel1', toChannel: 'channel2' }));
-  let msg = await onceMessage(a);
-  let parsed = JSON.parse(msg);
+  let parsed = await onceMessage(a);
   assert.equal(parsed.type, 'subsCopied');
   assert.equal(parsed.fromChannel, 'channel1');
   assert.equal(parsed.toChannel, 'channel2');
@@ -193,8 +178,7 @@ test('copySubscriptions increments reference counts and returns new socket IDs',
 
   // Copy again - should not have new socket IDs since ref counts will be incremented
   a.send(JSON.stringify({ type: 'copySubs', fromChannel: 'channel1', toChannel: 'channel2' }));
-  msg = await onceMessage(a);
-  parsed = JSON.parse(msg);
+  parsed = await onceMessage(a);
   assert.equal(parsed.type, 'subsCopied');
   assert.equal(parsed.newSocketIds.length, 0); // No new socket IDs, just ref count increases
 
@@ -218,25 +202,13 @@ test('send to array of socket IDs', async () => {
   const c = await createWebSocket();
 
   // Get socket IDs
-  const promiseA = onceMessage(a);
-  const promiseB = onceMessage(b);
-  const promiseC = onceMessage(c);
   a.send(JSON.stringify({ type: 'getSocketId' }));
   b.send(JSON.stringify({ type: 'getSocketId' }));
   c.send(JSON.stringify({ type: 'getSocketId' }));
 
-  const socketIdMsgA = await promiseA;
-  const socketIdMsgB = await promiseB;
-  const socketIdMsgC = await promiseC;
-
-  const socketIdA = JSON.parse(socketIdMsgA).socketId;
-  const socketIdB = JSON.parse(socketIdMsgB).socketId;
-  const socketIdC = JSON.parse(socketIdMsgC).socketId;
-
-  // Send message to sockets A and C via array (skipping B)
-  const receivedA = onceMessageOfType(a, 'directMessage');
-  const receivedC = onceMessageOfType(c, 'directMessage');
-  const sendResult = onceMessageOfType(a, 'sendResult');
+  const socketIdA = (await onceMessage(a)).socketId;
+  const socketIdB = (await onceMessage(b)).socketId;
+  const socketIdC = (await onceMessage(c)).socketId;
   
   a.send(JSON.stringify({
     type: 'sendToSockets',
@@ -244,14 +216,16 @@ test('send to array of socket IDs', async () => {
     data: 'array-message'
   }));
 
+  // Send message to sockets A and C via array (skipping B)
+  const receivedA = await onceMessageOfType(a, 'directMessage');
+  const receivedC = await onceMessageOfType(c, 'directMessage');
+  
   // A and C should receive the message
-  const msgA = await receivedA;
-  const msgC = await receivedC;
-  assert.equal(msgA.data, 'array-message');
-  assert.equal(msgC.data, 'array-message');
-
+  assert.equal(receivedA.data, 'array-message');
+  assert.equal(receivedC.data, 'array-message');
+  
   // Check that send returned the correct count (2 recipients)
-  const result = await sendResult;
+  const result = await onceMessageOfType(a, 'sendResult');
   assert.equal(result.count, 2, 'Send should return count of 2 for successful sends to A and C');
 
   // B should not receive anything (we'll test by trying to get a message with short timeout)
@@ -288,9 +262,9 @@ test('subscribe with array of socket IDs', async () => {
   const socketIdMsgB = await promiseB;
   const socketIdMsgC = await promiseC;
 
-  const socketIdA = JSON.parse(socketIdMsgA).socketId;
-  const socketIdB = JSON.parse(socketIdMsgB).socketId;
-  const socketIdC = JSON.parse(socketIdMsgC).socketId;
+  const socketIdA = socketIdMsgA.socketId;
+  const socketIdB = socketIdMsgB.socketId;
+  const socketIdC = socketIdMsgC.socketId;
 
   // Subscribe multiple sockets to a channel using array
   a.send(JSON.stringify({
@@ -300,8 +274,7 @@ test('subscribe with array of socket IDs', async () => {
   }));
 
   // Should receive array subscription response
-  const subResponse = await onceMessage(a);
-  const parsed = JSON.parse(subResponse);
+  const parsed = await onceMessage(a);
   assert.equal(parsed.type, 'subscribedArray');
   assert.equal(parsed.channel, 'array-test-channel');
   assert(Array.isArray(parsed.results));
@@ -333,8 +306,7 @@ test('subscribe with array of socket IDs', async () => {
     channel: 'array-test-channel'
   }));
 
-  const subResponse2 = await onceMessage(a);
-  const parsed2 = JSON.parse(subResponse2);
+  const parsed2 = await onceMessage(a);
   assert.equal(parsed2.type, 'subscribedArray');
   assert.equal(parsed2.results.length, 2);
   // Should be false since they were already subscribed
@@ -376,8 +348,7 @@ test('unsubscribe based on another channel using negative delta', async () => {
 
   // Unsubscribe all subscribers of channel1 from channel2 (delta=-1)
   a.send(JSON.stringify({ type: 'unsubFromChannel', fromChannel: 'channel1', toChannel: 'channel2', delta: 1 }));
-  let msg = await onceMessage(a);
-  let parsed = JSON.parse(msg);
+  let parsed = await onceMessage(a);
   assert.equal(parsed.type, 'unsubscribedFromChannel');
   assert.equal(parsed.fromChannel, 'channel1');
   assert.equal(parsed.toChannel, 'channel2');
@@ -420,7 +391,6 @@ test('send returns correct count for channel broadcasts', async () => {
   // Prepare to receive messages
   const receivedA = onceMessageOfType(a, 'published');
   const receivedB = onceMessageOfType(b, 'published');
-  const publishResult = onceMessageOfType(a, 'publishResult');
 
   // Broadcast to channel with returnCount flag
   a.send(JSON.stringify({ 
@@ -435,6 +405,8 @@ test('send returns correct count for channel broadcasts', async () => {
   const msgB = await receivedB;
   assert.equal(msgA.data, 'count-test');
   assert.equal(msgB.data, 'count-test');
+
+  const publishResult = onceMessageOfType(a, 'publishResult');
 
   // Check that publish returned count of 2 (a and b subscribed)
   const result = await publishResult;

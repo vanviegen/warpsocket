@@ -15,7 +15,6 @@ const {
 let startupArg = null;
 
 function handleStart(workerArg) {
-    console.log(`Worker handleStart called with:`, workerArg);
     startupArg = workerArg;
 }
 

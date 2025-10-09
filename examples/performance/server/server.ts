@@ -16,15 +16,17 @@ function arg(name: string, def?: string) {
   const [host,portStr] = bind.split(':');
   const port = parseInt(portStr);
 
+  // Bind to multiple ports, to alleviate ephemeral port exhaustion on the client side
+  const binds = [];
+  for(let i=0; i<16; i++) {
+    binds.push(`${host}:${port + i}`);
+  }
+
   console.log(`[perf-server] starting warpsocket on ${bind} through :${port + 15} with threads=${threads ?? 'auto'}`);
   await start({
-    bind,
+    bind: binds,
     workerPath: path.resolve(__dirname, './worker.js'),
     threads,
   });
-  // Bind to additional ports, to alleviate ephemeral port exhaustion on the client side
-  for(let i=port+1; i<port+16; i++) {
-    await start({bind: `0.0.0.0:${i}`});
-  }
   console.log('[perf-server] started');
 })();

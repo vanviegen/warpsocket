@@ -140,23 +140,106 @@ struct Worker {
     open_handler: Option<Arc<Root<JsFunction>>>,
 }
 
-// Schedule a callback to run in the worker's main JavaScript thread
-// Returns false if the worker is dead/not found, true on success
-fn schedule_in_worker_main_thread<F>(worker_id: u64, js_callback: F) -> bool
-where
-    F: for<'a> FnOnce(neon::context::Cx<'a>) -> NeonResult<()> + Send + 'static,
-{
-    if let Some(worker_ref) = WORKERS.get(&worker_id) {
-        let channel = worker_ref.channel.clone();
-        drop(worker_ref); // Release the DashMap reference before the send
+// Helper function to convert open_handler result to bool
+fn convert_open_handler_result(cx: &mut neon::context::Cx<'_>, result: Handle<JsValue>) -> bool {
+    result.downcast::<JsBoolean, _>(cx).map(|b| b.value(cx)).unwrap_or(true)
+}
 
-        channel.send(js_callback);
-        true
-    } else {
-        false
+// Run a JS callback asynchronously, waiting for Promise resolution if the callback returns one.
+// Returns either the converted success value or an error string depending on the outcome.
+async fn run_js_function<T, F, C>(
+    worker_id: u64,
+    handler: Arc<Root<JsFunction>>,
+    build_params: F,
+    convert_result: C,
+) -> Result<T, String>
+where
+    F: for<'a> FnOnce(&mut neon::context::Cx<'a>) -> NeonResult<Vec<Handle<'a, JsValue>>> + Send + 'static,
+    C: Fn(&mut neon::context::Cx<'_>, Handle<JsValue>) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    // Channel to receive the result value/error from the JS function (as it runs in another thread,
+    // and may also be async itself).
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<T,String>>();
+
+    let Some(worker) = WORKERS.get(&worker_id) else {
+        return Err("Worker not found".to_string());
+    };
+
+    // This use napi_call_threadsafe_function with an unbounded queue, so this should never block/fail.
+    worker.channel.send(move |mut cx| {
+        let callback = handler.to_inner(&mut cx);
+        let args = build_params(&mut cx)?;
+
+        let result = cx.try_catch(|cx_inner| {
+            let undefined = cx_inner.undefined();
+            callback.call(cx_inner, undefined, args)
+        });
+
+        match result {
+            Ok(value) => {
+                if let Ok(promise) = value.downcast::<JsPromise, _>(&mut cx) { // Await the Promise
+                
+                    // We need the Arc/Mutex/Option shenanigans here because the closure
+                    // is not guaranteed to be called at most once, while result_tx
+                    // does need that guarantee.
+                    let fulfilled_tx_opt = Arc::new(std::sync::Mutex::new(Option::Some(result_tx)));
+                    let rejected_tx_opt = fulfilled_tx_opt.clone();
+
+                    let on_fulfilled = JsFunction::new(&mut cx, move |mut cx_cb| {
+                        let arg = cx_cb.argument::<JsValue>(0)?;
+                        let converted_value = convert_result(&mut cx_cb, arg);
+                        if let Some(result_tx) = fulfilled_tx_opt.lock().unwrap().take() {
+                            result_tx.send(Ok(converted_value)).ok();
+                        }
+                        Ok(cx_cb.undefined())
+                    })?;
+
+                    let on_rejected = JsFunction::new(&mut cx, move |mut cx_cb| {
+                        let arg = cx_cb.argument::<JsValue>(0)?;
+                        let message = err_to_string(&mut cx_cb, &arg);
+                        if let Some(result_tx) = rejected_tx_opt.lock().unwrap().take() {
+                            result_tx.send(Err(message)).ok();
+                        }
+                        Ok(cx_cb.undefined())
+                    })?;
+
+                    let then_method: Handle<JsFunction> = promise.get(&mut cx, "then")?;
+                    let _ = then_method.call(&mut cx, promise, vec![
+                        on_fulfilled.upcast::<JsValue>(),
+                        on_rejected.upcast::<JsValue>(),
+                    ])?;
+                } else { // Synchronous result
+                    result_tx.send(Ok(convert_result(&mut cx, value))).ok();
+                }
+            }
+            Err(err) => {
+                let msg = err_to_string(&mut cx, &err);
+                result_tx.send(Err(msg)).ok();
+            }
+        }
+
+        Ok(())
+    });
+
+    // Read result with 5s timeout
+    tokio::select! {
+        res = result_rx => res.unwrap_or_else(|err| Err(format!("Callback could not read from result_rx: {}", err))),
+        _ = tokio::time::sleep(Duration::from_secs(5)) => Err("Callback timed out after 5 seconds".to_string()),
     }
 }
 
+fn err_to_string(cx: &mut Cx<'_>, err: &Handle<'_, JsValue>) -> String {
+    if let Ok(obj) = err.downcast::<neon::types::JsObject, _>(cx) {
+        if let Ok(stack_val) = obj.get::<JsValue, _, _>(cx, "stack") {
+            if let Ok(stack) = stack_val.downcast::<neon::types::JsString, _>(cx) {
+                return format!("Error in callback:\n{}", stack.value(cx));
+            }
+        }
+    }
+    // Fallback to stringified exception
+    return format!("Error in callback: {:?}", err);
+}
 
 // Get sender and user prefix for a socket, following virtual socket chains.
 // Returns owned values (Arc is cloned, UserPrefix is copied) so no lifetime issues.
@@ -532,35 +615,6 @@ fn delete_virtual_socket(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     Ok(cx.boolean(opt_pair.is_some()))
 }
 
-// Must be called from the main thread for this js context
-fn invoke_js_callback<'a, C: Context<'a>>(
-    cx: &mut C,
-    callback: Handle<JsFunction>,
-    args: Vec<Handle<JsValue>>,
-) -> Option<Handle<'a, JsValue>> {
-    let result = cx.try_catch(|cx_inner| {
-        let undefined = cx_inner.undefined();
-        callback.call(cx_inner, undefined, args)
-    });
-
-    match result {
-        Ok(value) => Some(value),
-        Err(err) => {
-            if let Ok(obj) = err.downcast::<neon::types::JsObject, _>(cx) {
-                if let Ok(stack_val) = obj.get::<JsValue, _, _>(cx, "stack") {
-                    if let Ok(stack) = stack_val.downcast::<neon::types::JsString, _>(cx) {
-                        eprintln!("Error in callback:\n{}", stack.value(cx));
-                        return None;
-                    }
-                }
-            }
-            // Fallback to stringified exception
-            let msg = format!("{:?}", err);
-            eprintln!("Error in callback: {}", msg);
-            None
-        }
-    }
-}
 
 fn js_value_to_bytes<'a, C: Context<'a>>(cx: &mut C, value: Handle<JsValue>) -> NeonResult<Vec<u8>> {
     if let Ok(buffer) = value.downcast::<JsBuffer, _>(cx) {
@@ -694,8 +748,8 @@ async fn start_server(listener: TcpListener) {
 }
 
 async fn handle_connection(stream: TcpStream) {
-    eprintln!("New connection from {:?}", stream.peer_addr());
     let peer_addr = stream.peer_addr().ok();
+    // eprintln!("New connection from {:?}", peer_addr);
     
     // Select a worker for this connection using round-robin
     let worker_id = {
@@ -711,7 +765,7 @@ async fn handle_connection(stream: TcpStream) {
     // Generate socket ID early so we can use it in the handshake callback
     let socket_id = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    eprintln!("socket_id={} assign to worker_id={}", socket_id, worker_id);
+    // eprintln!("socket_id={} assign to worker_id={}", socket_id, worker_id);
     
     // Check for open_handler without holding the lock during accept
     let open_handler = WORKERS.get(&worker_id).and_then(|w| w.open_handler.clone());
@@ -736,46 +790,41 @@ async fn handle_connection(stream: TcpStream) {
             }
         };
         
-        eprintln!("socket_id={} accepted=true", socket_id);
-        
         // Call open_handler with captured headers
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let send_result = schedule_in_worker_main_thread(worker_id, move |mut cx| {
-            let callback = handler.to_inner(&mut cx);
-            let js_socket_id = cx.number(socket_id as f64);
-            let js_client_ip = cx.string(peer_addr.map(|addr| addr.ip().to_string()).unwrap_or_default());
-            
-            let headers_obj = cx.empty_object();
-            for (key, value) in headers_map {
-                let js_key = cx.string(&key);
-                let js_value = cx.string(&value);
-                headers_obj.set(&mut cx, js_key, js_value)?;
+        let should_accept = match run_js_function(
+            worker_id,
+            handler,
+            move |cx| {
+                let js_socket_id = cx.number(socket_id as f64);
+                let js_client_ip = cx.string(peer_addr.map(|addr| addr.ip().to_string()).unwrap_or_default());
+                
+                let headers_obj = cx.empty_object();
+                for (key, value) in headers_map {
+                    let js_key = cx.string(&key);
+                    let js_value = cx.string(&value);
+                    headers_obj.set(cx, js_key, js_value)?;
+                }
+                
+                Ok(vec![
+                    js_socket_id.upcast(),
+                    js_client_ip.upcast(),
+                    headers_obj.upcast(),
+                ])
+            },
+            convert_open_handler_result,
+        ).await {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("socket_id={} ip={:?} open_handler error: {}", socket_id, peer_addr, err);
+                send_close_frame(socket_id, "Internal server error (open_handler)".to_string()).await;
+                false
             }
-
-            let result = invoke_js_callback(&mut cx, callback, vec![
-                js_socket_id.upcast(),
-                js_client_ip.upcast(),
-                headers_obj.upcast(),
-            ]);
-
-            let should_accept = match result {
-                Some(value) => value.downcast::<JsBoolean, _>(&mut cx)
-                    .map(|b| b.value(&mut cx)).unwrap_or(true),
-                None => false,
-            };
-
-            let _ = tx.send(should_accept);
-            Ok(())
-        });
-        
-        let should_accept = send_result && 
-            tokio::time::timeout(Duration::from_secs(5), rx).await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or(false);
+        };
+        // println!("socket_id={} open_handler returned {}", socket_id, should_accept);
         
         if !should_accept {
-            eprintln!("socket_id={} rejected by open_handler", socket_id);
+            eprintln!("socket_id={} ip={:?} rejected by open_handler", socket_id, peer_addr);
+            send_close_frame(socket_id, "Connection rejected (open_handler)".to_string()).await;
             return;
         }
         
@@ -783,10 +832,7 @@ async fn handle_connection(stream: TcpStream) {
     } else {
         // No open_handler, just accept without capturing headers
         match tokio_tungstenite::accept_async(stream).await {
-            Ok(ws) => {
-                eprintln!("socket_id={} accepted=true", socket_id);
-                ws
-            }
+            Ok(ws) => ws,
             Err(e) => {
                 if e.to_string() != "WebSocket protocol error: Handshake not finished" {
                     eprintln!("WebSocket connection failed: {}", e);
@@ -829,52 +875,67 @@ async fn handle_connection(stream: TcpStream) {
         if let Some(handler) = &worker_ref.close_handler {
             let handler = Arc::clone(handler);
             
-            schedule_in_worker_main_thread(worker_id, move |mut cx| {
-                let callback = handler.to_inner(&mut cx);
-                let js_socket_id = cx.number(socket_id as f64).upcast();
-                invoke_js_callback(&mut cx, callback, vec![js_socket_id]);
-                Ok(())
-            });
+            let _ = run_js_function(
+                worker_id,
+                handler,
+                move |cx| {
+                    let js_socket_id = cx.number(socket_id as f64);
+                    Ok(vec![js_socket_id.upcast()])
+                },
+                |_, _| (), // Ignore result
+            ).await;
         }
     }
 }
 
 async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message) -> bool {
-    if let Some(worker_ref) = WORKERS.get(&worker_id) {
-        let opt_handler = match &message {
-            Message::Text(_) => &worker_ref.text_message_handler,
-            Message::Binary(_) => &worker_ref.binary_message_handler,
-            _ => &None
-        };
-
-        if let Some(handler) = opt_handler {
-            let handler = Arc::clone(handler);
-            
-            let result = schedule_in_worker_main_thread(worker_id, move |mut cx| {
-                let callback = handler.to_inner(&mut cx);
-                
-                let js_data = match message {
-                    Message::Text(text) => cx.string(text).upcast::<JsValue>(),
-                    Message::Binary(data) => create_js_buffer(&mut cx, &data)?.upcast::<JsValue>(),
-                    _ => cx.undefined().upcast::<JsValue>(),
-                };
-                
-                let js_socket_id = cx.number(socket_id as f64);
-                
-                invoke_js_callback(&mut cx, callback, vec![js_data, js_socket_id.upcast()]);
-                
-                Ok(())
-            });
-            
-            if !result {
-                send_close_frame(socket_id, "Server worker unavailable".to_string()).await;
-                return false; // Signal that the connection should be terminated
-            }
+    // Get the appropriate handler based on message type
+    let handler = match WORKERS.get(&worker_id) {
+        Some(worker_ref) => {
+            let h = match &message {
+                Message::Text(_) => worker_ref.text_message_handler.clone(),
+                Message::Binary(_) => worker_ref.binary_message_handler.clone(),
+                _ => None,
+            };
+            drop(worker_ref);
+            h
         }
-        true // Continue processing messages
-    } else {
-        send_close_frame(socket_id, "Server worker is down".to_string()).await;
-        false // Terminate connection if worker doesn't exist
+        None => {
+            send_close_frame(socket_id, "Server worker is down".to_string()).await;
+            return false;
+        }
+    };
+    
+    // If no handler is registered, just continue
+    let Some(handler) = handler else {
+        send_close_frame(socket_id, "Server worker has no handler".to_string()).await;
+        return false;
+    };
+    
+    let result = run_js_function(
+        worker_id,
+        handler,
+        move |cx| {
+            let js_data = match &message {
+                Message::Text(text) => cx.string(text).upcast::<JsValue>(),
+                Message::Binary(data) => create_js_buffer(cx, data)?.upcast::<JsValue>(),
+                _ => cx.undefined().upcast::<JsValue>(),
+            };
+            
+            let js_socket_id = cx.number(socket_id as f64);
+            
+            Ok(vec![js_data, js_socket_id.upcast()])
+        },
+        |_, _| (), // Ignore result
+    ).await;
+    
+    match result {
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!("socket_id={} message handler error: {}", socket_id, err);
+            send_close_frame(socket_id, "Internal server error (message handler)".to_string()).await;
+            false
+        }
     }
 }
 

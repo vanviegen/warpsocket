@@ -25,9 +25,45 @@ async function createWebSocket(url) {
     ws.once('open', resolve); 
     ws.once('error', reject); 
   });
-  
+
+  const state = {
+    queue: []
+  };
+
+  states.set(ws, state);
+
+  ws.on('message', (data) => {
+    if (state.cb) {
+      state.cb[0](data);
+      delete state.cb;
+    } else {
+      state.queue.push(data);
+    }
+  });
+
+  ws.on('close', (code,reason) => {
+    reason = reason instanceof Buffer ? new TextDecoder().decode(reason) : reason;
+    const state = states.get(ws);
+    if (state.cb) {
+      delete state.queue;
+      state.cb[1](new Error(`WebSocket closed (code:${code}, reason: ${reason})`));
+      delete state.cb;
+    }
+  });
+
+  ws.on('error', (err) => {
+    const state = states.get(ws);
+    if (state.cb) {
+      delete state.queue;
+      state.cb[1](err);
+      delete state.cb;
+    }
+  });
+
   return ws;
 }
+
+const states = new WeakMap();
 
 /**
  * Spawn a server with custom options for a specific test.
@@ -62,24 +98,36 @@ test.afterEach(async () => {
 // Helper functions for WebSocket testing
 
 /**
- * Wait for the next message from a WebSocket
+ * Wait for the next raw (text or binary) message from a WebSocket.
  * @param {WebSocket} ws - The WebSocket instance
  * @param {number} timeout - Timeout in milliseconds (default: 2000)
- * @returns {Promise<string|Buffer>} The message as a string or binary data
+ * @returns {Promise<string|Buffer>} The raw message as a string or binary data
  */
-const onceMessage = (ws, timeout = 2000) => new Promise((resolve, reject) => {
-  const onMsg = (m) => {
-    ws.off('message', onMsg);
-    resolve(m);
-  };
-  ws.on('message', onMsg);
-  if (timeout != null) {
+const onceMessageRaw = (ws, timeout = 2000) => new Promise((resolve, reject) => {
+  const state = states.get(ws);
+  if (state.cb) reject(new Error('Already waiting for a message on this WebSocket'));
+  if (!state.queue) reject(new Error('WebSocket has been closed'));
+  if (state.queue.length) resolve(state.queue.shift());
+  else {
+    state.cb = [resolve, reject];
     setTimeout(() => {
-      ws.off('message', onMsg);
-      reject(new Error(`Timeout waiting for message`));
+      if (state.cb && state.cb[0] === resolve) {
+        delete state.cb;
+        reject(new Error('Timeout waiting for message'));
+      }
     }, timeout);
   }
 });
+
+/**
+ * Like above, but JSON.
+ * @param {WebSocket} ws - The WebSocket instance
+ * @param {number} timeout - Timeout in milliseconds (default: 2000)
+ * @returns The message data, decoded as JSON.
+ */
+const onceMessage = async (ws, timeout = 2000) => {
+  return JSON.parse(await onceMessageRaw(ws, timeout));
+};
 
 /**
  * Wait for a message of a specific type from a WebSocket
@@ -88,23 +136,17 @@ const onceMessage = (ws, timeout = 2000) => new Promise((resolve, reject) => {
  * @param {number} timeout - Timeout in milliseconds (default: 2000)
  * @returns {Promise<object>} The parsed message object
  */
-const onceMessageOfType = (ws, type, timeout = 2000) => new Promise((resolve, reject) => {
-  const onMsg = (m) => {
-    const obj = JSON.parse(m.toString());
-    if (!type || obj.type === type) {
-      ws.off('message', onMsg);
-      resolve(obj);
-    }
-  };
-  ws.on('message', onMsg);
-  if (timeout != null) {
-    setTimeout(() => reject(new Error(`Timeout waiting for message type: ${type}`)), timeout);
+const onceMessageOfType = async (ws, type, timeout = 2000) => {
+  while(true) {
+    const msg = await onceMessage(ws, timeout);
+    if (!type || msg.type === type) return msg;
   }
-});
+};
 
 module.exports = {
   createWebSocket,
   spawnCustomServer,
   onceMessage,
+  onceMessageRaw,
   onceMessageOfType
 };

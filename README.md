@@ -10,7 +10,7 @@ How does this work?
   - Sending messages to specific WebSocket connections.
   - Subscribing connections to named channels.
   - Broadcasting messages to these named channels.
-- WebSocket connections are load-balanced across multiple JavaScript worker threads, with each connection pinned to one thread.
+- WebSocket connections are load-balanced across multiple JavaScript worker threads, with each connection pinned to one thread. For each connection, function handlers are called sequentially and in the order they were received in.
 
 So what WarpSocket buys you compared to the standard Node.js WebSocket library (`ws`) is:
 - More performant and memory efficient connection handling.
@@ -22,6 +22,11 @@ Compared to [PushPin](https://github.com/fastly/pushpin), WarpSocket is:
 - More lightweight and easier to deploy: just an npm install, no need to run a separate server process.
 - Capable of running your business logic in parallel JavaScript threads.
 - Very fast!
+
+Bonus features:
+- Very fast shared in-memory key/value store for coordination between worker threads.
+- Virtual sockets that can point to actual WebSocket connections or other virtual sockets, allowing for convenient bulk unsubscription and message prefixing.
+- Automatic worker thread monitoring and recovery to prevent infinite loops from bringing down the entire server.
 
 ## Quick Start
 
@@ -73,21 +78,23 @@ When you `start()` a WarpSocket server from the main thread of your Node.js/Bun 
 
 Besides firing up worker threads, when starting a WarpSocket server, the native addon will also bind to the specified address and start accepting WebSocket connections. It handles incoming connections and messages using asynchronous multi-threaded Rust code (using Tokio and Tungstenite). This should be fast!
 
-Each incoming WebSocket connection is assigned a unique socket ID and coupled to a worker thread using a round-robin strategy. All events for that connection (open, incoming message, close) are then routed to that same worker thread. This means that your JavaScript code in the worker thread can maintain per-connection state in memory (e.g. in a Map keyed by socket ID) without needing to worry about synchronization between threads.
+Each incoming WebSocket connection is assigned a unique socket ID and coupled to a worker thread using a round-robin strategy. All events for that connection (open, incoming message, close) are then routed to that same worker thread. This means that your JavaScript code in the worker thread can maintain per-connection state in memory (e.g. in a Map keyed by socket ID) without needing to worry about synchronization between threads. 
 
-Events are scheduled to be run in the order that they came in (at least for messages coming from a single WebSocket) in the coupled worker's main thread. Worker handler functions may be synchronous or asynchronous. They may do whatever it is a backend server usually does: access databases, call other services, etc. Besides that, they may also call WarpSocket functions to send messages (to specific socket ids or channels) and subscribe to channels. Because WarpSocket data structures are shared between threads, a worker can subscribe to any channel and send messages to any channel/connection, even if that connection is coupled to a different worker thread.
+Events are scheduled to be run sequentially and in the order that they came in (at least for messages coming from a single WebSocket) in the coupled worker's main thread. Worker handler functions may be synchronous or asynchronous (in which case they're awaited). They may do whatever it is a backend server usually does: access databases, call other services, etc. Besides that, they may also call WarpSocket functions to send messages (to specific socket ids or channels) and subscribe to channels. Because WarpSocket data structures are shared between threads, a worker can subscribe to any channel and send messages to any channel/connection, even if that connection is coupled to a different worker thread.
 
 Be aware that if you block a worker thread for too long, it will delay processing of all events for all connections assigned to that worker (as is usual in Node.js). In order to prevent an infinite loop (caused by a logic error) from bringing down the entire server, WarpSocket includes automatic worker thread monitoring and recovery. When a worker thread is unable to respond to a ping message within 3 seconds, it is considered unresponsive and will be terminated. All connections assigned to that worker are then closed (when they next send a message) with an appropriate error code, while other workers continue to operate normally. Client that get disconnected should be made to reconnect (they'll be assigned a new worker), reinitialize their state, and continue business as usual.
+
+Async handlers are also time-limited: it it doesn't complete within 5 seconds, WarpSocket gives up waiting and closes the connection with an error code. This is to prevent your application from becoming completely unresponsive for a given client due to a long-running/broken async operations (that all other requests will wait for). Silently dropping the message might be dangerous, so instead the connection is closed, and it's up to the client to reconnect and reinitialize its state.
 
 ## Performance
 
 The `examples/performance/` directory contains a simple benchmarking test. I'm planning to do a more thorough performance analysis on AWS soon (I've already had AI generate a Terraform config for it, but haven't had the heart to run it yet), but for now here's a workload I was able to sustain on my laptop:
 
-- 60,000 concurrent connections, each subscribed to one of 6,000 channels
-- ~70,000 incoming messages per second, delivered to JavaScript
-- ~770,000 outgoing messages per second (for each incoming message, we do a reply and a broadcast to a channel of 10 random subscribers)
+- 60,000 concurrent connections over localhost TCP, each subscribed to one channel shared by 10 connections
+- ~120,000 incoming messages per second, delivered to JavaScript
+- ~1,300,000 outgoing messages per second (for each incoming message, we do a reply and a broadcast to a channel of 10 random subscribers)
 - ~50% utilization of my AMD Ryzen 9 6900HX CPU (the other 50% being the 6 clients generating the load)
-- ~980 MB of resident RAM
+- ~1600 MB of resident RAM
 
 I suspect that it will be possible to squeeze out more performance, using some profiling and optimization. But given the above numbers, I haven't felt the need yet.
 
@@ -133,7 +140,7 @@ missing or invalid, or if already started.
 
 ### unsubscribe · function
 
-[object Object],[object Object],[object Object]
+Exactly the same as `subscribe`, only with a negative delta (defaulting to 1, which means a single unsubscribe, or a subscribe with delta -1).
 
 **Signature:** `(socketIdOrChannelName: string | number | number[] | ArrayBuffer | Uint8Array<ArrayBufferLike> | (string | number | ArrayBuffer | Uint8Array<ArrayBufferLike>)[], channelName: string | ... 1 more ... | Uint8Array<...>, delta?: number) => number[]`
 
@@ -144,6 +151,12 @@ missing or invalid, or if already started.
 - `delta: number` (optional)
 
 ### copySubscriptions · function
+
+**DEPRECATED:** Use subscribe(fromChannelName, toChannelName) instead.
+
+Copies all subscribers from one channel to another channel. Uses reference counting - if a subscriber 
+is already subscribed to the destination channel, their reference count will be incremented instead 
+of creating duplicate subscriptions.
 
 **Signature:** `(fromChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>, toChannelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>) => number[]`
 
@@ -165,31 +178,31 @@ All handler methods are optional - if not provided, the respective functionality
 Called when the worker is starting up, before registering with the native addon.
 This allows for initialization logic that needs to run before handling WebSocket events.
 
-**Type:** `(workerArg?: any) => void`
+**Type:** `(workerArg?: any) => void | Promise<void>`
 
 #### workerInterface.handleOpen · member
 
 Handles new WebSocket connections and can reject them. If not provided, all connections are accepted.
 
-**Type:** `(socketId: number, ip: string, headers: Record<string, string>) => boolean`
+**Type:** `(socketId: number, ip: string, headers: Record<string, string>) => boolean | Promise<boolean>`
 
 #### workerInterface.handleTextMessage · member
 
 Handles incoming WebSocket text messages from clients.
 
-**Type:** `(data: string, socketId: number) => void`
+**Type:** `(data: string, socketId: number) => void | Promise<void>`
 
 #### workerInterface.handleBinaryMessage · member
 
 Handles incoming WebSocket binary messages from clients.
 
-**Type:** `(data: Uint8Array<ArrayBufferLike>, socketId: number) => void`
+**Type:** `(data: Uint8Array<ArrayBufferLike>, socketId: number) => void | Promise<void>`
 
 #### workerInterface.handleClose · member
 
 Handles WebSocket connection closures.
 
-**Type:** `(socketId: number) => void`
+**Type:** `(socketId: number) => void | Promise<void>`
 
 ### send · function
 
