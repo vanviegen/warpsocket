@@ -5,6 +5,11 @@ import { Worker } from 'node:worker_threads';
 import * as os from 'node:os';
 import * as pathMod from 'node:path';
 
+type ChannelDebug = { channel: Uint8Array, subscribers: { [socketId: number]: /*ref count */ number } };
+type SocketDebug = { socketId: number, ip: string, workerId: number } | { socketId: number, targetSocketId: number, userPrefix?: Uint8Array };
+type WorkerDebug = { workerId: number, hasTextHandler: boolean, hasBinaryHandler: boolean, hasCloseHandler: boolean, hasOpenHandler: boolean };
+type KVDebug = { key: Uint8Array, value: Uint8Array };
+
 declare module "warpsocket/addon-loader" {
     function start(bind: string): void;
     function registerWorkerThread(worker: WorkerInterface): number;
@@ -17,6 +22,15 @@ declare module "warpsocket/addon-loader" {
     function getKey(key: Uint8Array | ArrayBuffer | string): Uint8Array | undefined;
     function setKey(key: Uint8Array | ArrayBuffer | string, value?: Uint8Array | ArrayBuffer | string | undefined): Uint8Array | undefined;
     function setKeyIf(key: Uint8Array | ArrayBuffer | string, newValue?: Uint8Array | ArrayBuffer | string | undefined, checkValue?: Uint8Array | ArrayBuffer | string | undefined): boolean;
+    
+    function getDebugState(mode: "channels"): ChannelDebug[];
+    function getDebugState(mode: "channels", channelName: Uint8Array | ArrayBuffer | string): ChannelDebug | undefined;
+    function getDebugState(mode: "channels", filterSocketId: number): ChannelDebug[];
+    function getDebugState(mode: "sockets"): SocketDebug[];
+    function getDebugState(mode: "sockets", socketId: number): SocketDebug | undefined;
+    function getDebugState(mode: "workers"): WorkerDebug[];
+    function getDebugState(mode: "workers", workerId: number): WorkerDebug | undefined;
+    function getDebugState(mode: "kv"): KVDebug[];
 }
 
 /**
@@ -337,3 +351,11 @@ export const setKey = addon.setKey;
  * @returns true when the compare-and-set succeeds, false otherwise.
  */
 export const setKeyIf = addon.setKeyIf;
+
+/**
+ * Retrieves debug state information about the internal WarpSocket data structures.
+ * @param mode - The type of data to retrieve: "channels" for channel subscriptions, "sockets" for socket details, "workers" for worker thread info, "kv" for key-value store entries.
+ * @param singleKey - Optional. When provided, returns only the data for a specific item: for "channels", a channel name (bytes) or socket ID (number); for "sockets" and "workers", a socket ID or worker ID (number); for "kv", a key (bytes).
+ * @returns An array of objects with detailed state information, capped at 2000 entries. The objects' structure depends on the mode. When singleKey is provided, a single object or undefined is returned instead of an array (except when mode is "channels" and singleKey is a number).
+ */
+export const getDebugState = addon.getDebugState;

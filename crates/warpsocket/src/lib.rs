@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::collections::{HashMap};
 use std::time::Duration;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::time;
 use tokio_tungstenite::{
     accept_hdr_async,
@@ -37,6 +37,9 @@ macro_rules! convert_arg {
     }};
     ($cx:expr, $val:expr, Bytes) => {{
         js_value_to_bytes($cx, $val)
+    }};
+    ($cx:expr, $val:expr, u32) => {{
+        $val.downcast::<JsNumber, _>($cx).map(|s| s.value($cx) as u32)
     }};
     ($cx:expr, $val:expr, u64) => {{
         $val.downcast::<JsNumber, _>($cx).map(|s| s.value($cx) as u64)
@@ -98,9 +101,11 @@ macro_rules! read_arg_opt {
 }
 
 enum SocketEntry {
-    // Actual WebSocket connection with sender
+    // Actual WebSocket connection with sender and metadata
     Actual {
         sender_mutex: Arc<tokio::sync::Mutex<Sender>>,
+        ip: std::net::IpAddr,
+        worker_id: u32,
     },
     // Virtual socket pointing to another socket ID (which may be actual or virtual)
     Virtual {
@@ -115,9 +120,9 @@ lazy_static! {
     // Maps socket IDs to their SocketEntry (actual or virtual)
     static ref SOCKETS: DashMap<u64, SocketEntry> = DashMap::new();
     // Maps worker thread IDs to their associated WorkerThread instances
-    static ref WORKERS: DashMap<u64, Worker> = DashMap::new();
+    static ref WORKERS: DashMap<u32, Worker> = DashMap::new();
     // Vector of alive worker IDs for efficient round-robin selection
-    static ref WORKER_IDS: std::sync::RwLock<Vec<u64>> = std::sync::RwLock::new(Vec::new());
+    static ref WORKER_IDS: std::sync::RwLock<Vec<u32>> = std::sync::RwLock::new(Vec::new());
     // Global runtime for executing async operations from sync contexts
     static ref RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     // Global key-value store accessible from all threads
@@ -127,7 +132,7 @@ lazy_static! {
 // Atomic counter for generating unique socket IDs
 static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(1);
 // Atomic counter for generating unique worker thread IDs
-static WORKER_COUNTER: AtomicU64 = AtomicU64::new(0);
+static WORKER_COUNTER: AtomicU32 = AtomicU32::new(0);
 // Round-robin counter for worker selection
 static ROUND_ROBIN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -148,7 +153,7 @@ fn convert_open_handler_result(cx: &mut neon::context::Cx<'_>, result: Handle<Js
 // Run a JS callback asynchronously, waiting for Promise resolution if the callback returns one.
 // Returns either the converted success value or an error string depending on the outcome.
 async fn run_js_function<T, F, C>(
-    worker_id: u64,
+    worker_id: u32,
     handler: Arc<Root<JsFunction>>,
     build_params: F,
     convert_result: C,
@@ -250,7 +255,7 @@ fn get_socket(socket_id: u64) -> Option<(Arc<tokio::sync::Mutex<Sender>>, UserPr
     for _ in 0..100 { // Prevent infinite loops from cycles (that should be impossible, but still..)
         if let Some(guard) = SOCKETS.get(&current_id) {
             match guard.value() {
-                SocketEntry::Actual { sender_mutex } => {
+                SocketEntry::Actual { sender_mutex, .. } => {
                     // Found an actual socket - clone Arc and return
                     return Some((Arc::clone(sender_mutex), first_user_prefix));
                 }
@@ -393,7 +398,7 @@ fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsNumber> {
 
 // Simple function to kill a worker process by PID
 fn deregister_worker_thread(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let worker_id = read_arg!(&mut cx, 0, u64);
+    let worker_id = read_arg!(&mut cx, 0, u32);
     let result = if let Some((_, _worker)) = WORKERS.remove(&worker_id) {
         eprintln!("Removed worker {} from pool", worker_id);
 
@@ -847,6 +852,8 @@ async fn handle_connection(stream: TcpStream) {
     // Store the WebSocket sender in global map
     SOCKETS.insert(socket_id, SocketEntry::Actual {
         sender_mutex: Arc::new(tokio::sync::Mutex::new(ws_sender)),
+        ip: peer_addr.map(|addr| addr.ip()).unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))),
+        worker_id: worker_id as u32,
     });
     
     // Handle incoming messages
@@ -888,7 +895,7 @@ async fn handle_connection(stream: TcpStream) {
     }
 }
 
-async fn handle_socket_message(worker_id: u64, socket_id: u64, message: Message) -> bool {
+async fn handle_socket_message(worker_id: u32, socket_id: u64, message: Message) -> bool {
     // Get the appropriate handler based on message type
     let handler = match WORKERS.get(&worker_id) {
         Some(worker_ref) => {
@@ -971,6 +978,164 @@ fn cleanup_disconnected_connections() {
     });
 }
 
+fn channel_to_object<'a>(cx: &mut FunctionContext<'a>, channel_name: &[u8], subscribers: &HashMap<u64, u16>) -> NeonResult<Handle<'a, JsObject>> {
+    let obj = cx.empty_object();
+    let channel_buf = create_js_buffer(cx, channel_name)?;
+    obj.set(cx, "channel", channel_buf)?;
+    let subs_obj = cx.empty_object();
+    for (socket_id, ref_count) in subscribers {
+        let ref_count_num = cx.number(*ref_count as f64);
+        let socket_id_str = socket_id.to_string();
+        subs_obj.set(cx, socket_id_str.as_str(), ref_count_num)?;
+    }
+    obj.set(cx, "subscribers", subs_obj)?;
+    Ok(obj)
+}
+
+fn socket_to_object<'a>(cx: &mut FunctionContext<'a>, socket_id: u64, socket_entry: &SocketEntry) -> NeonResult<Handle<'a, JsObject>> {
+    let obj = cx.empty_object();
+    let socket_id_num = cx.number(socket_id as f64);
+    obj.set(cx, "socketId", socket_id_num)?;
+    match socket_entry {
+        SocketEntry::Actual { ip, worker_id, .. } => {
+            let ip_str = cx.string(ip.to_string());
+            obj.set(cx, "ip", ip_str)?;
+            let worker_id_num = cx.number(*worker_id as f64);
+            obj.set(cx, "workerId", worker_id_num)?;
+        }
+        SocketEntry::Virtual { target_socket_id, user_prefix } => {
+            let target_num = cx.number(*target_socket_id as f64);
+            obj.set(cx, "targetSocketId", target_num)?;
+            if user_prefix.len > 0 {
+                let prefix_buf = create_js_buffer(cx, &user_prefix.data[..user_prefix.len as usize])?;
+                obj.set(cx, "userPrefix", prefix_buf)?;
+            }
+        }
+    }
+    Ok(obj)
+}
+
+fn worker_to_object<'a>(cx: &mut FunctionContext<'a>, worker_id: u32, worker: &Worker) -> NeonResult<Handle<'a, JsObject>> {
+    let obj = cx.empty_object();
+    let worker_id_num = cx.number(worker_id as f64);
+    obj.set(cx, "workerId", worker_id_num)?;
+    let has_text = cx.boolean(worker.text_message_handler.is_some());
+    obj.set(cx, "hasTextHandler", has_text)?;
+    let has_binary = cx.boolean(worker.binary_message_handler.is_some());
+    obj.set(cx, "hasBinaryHandler", has_binary)?;
+    let has_close = cx.boolean(worker.close_handler.is_some());
+    obj.set(cx, "hasCloseHandler", has_close)?;
+    let has_open = cx.boolean(worker.open_handler.is_some());
+    obj.set(cx, "hasOpenHandler", has_open)?;
+    Ok(obj)
+}
+
+fn kv_to_object<'a>(cx: &mut FunctionContext<'a>, key: &[u8], value: &[u8]) -> NeonResult<Handle<'a, JsObject>> {
+    let obj = cx.empty_object();
+    let key_buf = create_js_buffer(cx, key)?;
+    obj.set(cx, "key", key_buf)?;
+    let value_buf = create_js_buffer(cx, value)?;
+    obj.set(cx, "value", value_buf)?;
+    Ok(obj)
+}
+
+fn get_debug_state(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let mode = read_arg!(&mut cx, 0, String);
+
+    match mode.as_str() {
+        "channels" => {
+            let single_key_opt: Option<Handle<JsValue>> = cx.argument_opt(1);
+            let has_key = single_key_opt
+                .as_ref()
+                .map(|val| val.downcast::<JsUndefined, _>(&mut cx).is_err())
+                .unwrap_or(false);
+            
+            if has_key {
+                let key_val = single_key_opt.unwrap();
+                if let Ok(num) = key_val.downcast::<JsNumber, _>(&mut cx) {
+                    let socket_id = num.value(&mut cx) as u64;
+                    let js_array = cx.empty_array();
+                    let mut i = 0;
+                    for entry in CHANNELS.iter() {
+                        if i >= 2000 { break; }
+                        if entry.value().contains_key(&socket_id) {
+                            let obj = channel_to_object(&mut cx, entry.key(), entry.value())?;
+                            js_array.set(&mut cx, i, obj)?;
+                            i += 1;
+                        }
+                    }
+                    Ok(js_array.upcast())
+                } else {
+                    let channel_bytes = js_value_to_bytes(&mut cx, key_val)?;
+                    if let Some(subscribers) = CHANNELS.get(&channel_bytes) {
+                        let obj = channel_to_object(&mut cx, &channel_bytes, subscribers.value())?;
+                        Ok(obj.upcast())
+                    } else {
+                        Ok(cx.undefined().upcast())
+                    }
+                }
+            } else {
+                // No key or undefined key - return all channels
+                let js_array = cx.empty_array();
+                for (i, entry) in CHANNELS.iter().enumerate() {
+                    if i >= 2000 { break; }
+                    let obj = channel_to_object(&mut cx, entry.key(), entry.value())?;
+                    js_array.set(&mut cx, i as u32, obj)?;
+                }
+                Ok(js_array.upcast())
+            }
+        }
+        "sockets" => {
+            let single_key_opt: Option<u64> = read_arg_opt!(&mut cx, 1, u64);
+            if let Some(id) = single_key_opt {
+                if let Some(socket_entry) = SOCKETS.get(&id) {
+                    let obj = socket_to_object(&mut cx, id, socket_entry.value())?;
+                    Ok(obj.upcast())
+                } else {
+                    Ok(cx.undefined().upcast())
+                }
+            } else {
+                let js_array = cx.empty_array();
+                for (i, entry) in SOCKETS.iter().enumerate() {
+                    if i >= 2000 { break; }
+                    let obj = socket_to_object(&mut cx, *entry.key(), entry.value())?;
+                    js_array.set(&mut cx, i as u32, obj)?;
+                }
+                Ok(js_array.upcast())
+            }
+        }
+        "workers" => {
+            let single_key_opt: Option<u32> = read_arg_opt!(&mut cx, 1, u32);
+            if let Some(id) = single_key_opt {
+                if let Some(worker) = WORKERS.get(&id) {
+                    let obj = worker_to_object(&mut cx, id, worker.value())?;
+                    Ok(obj.upcast())
+                } else {
+                    Ok(cx.undefined().upcast())
+                }
+            } else {
+                let js_array = cx.empty_array();
+                for (i, entry) in WORKERS.iter().enumerate() {
+                    if i >= 2000 { break; }
+                    let obj = worker_to_object(&mut cx, *entry.key(), entry.value())?;
+                    js_array.set(&mut cx, i as u32, obj)?;
+                }
+                Ok(js_array.upcast())
+            }
+        }
+        "kv" => {
+            let js_array = cx.empty_array();
+            for (i, entry) in KEY_VALUE_STORE.iter().enumerate() {
+                if i >= 2000 { break; }
+                let obj = kv_to_object(&mut cx, entry.key(), entry.value())?;
+                js_array.set(&mut cx, i as u32, obj)?;
+            }
+            Ok(js_array.upcast())
+        }
+        _ => cx.throw_error("Invalid mode"),
+    }
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("start", start)?;
@@ -984,6 +1149,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("getKey", get_key)?;
     cx.export_function("setKey", set_key)?;
     cx.export_function("setKeyIf", set_key_if)?;
+    cx.export_function("getDebugState", get_debug_state)?;
     Ok(())
 }
 

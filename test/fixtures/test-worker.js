@@ -8,7 +8,8 @@ const {
     copySubscriptions,
     getKey,
     setKey,
-    setKeyIf
+    setKeyIf,
+    getDebugState
 } = require('warpsocket');
 
 // Store the workerArg passed to handleStart for testing
@@ -145,6 +146,14 @@ function handleTextMessage(data, socketId) {
         case 'ping':
             // Respond to ping messages - this will trigger dead worker detection when worker is dead
             send(socketId, JSON.stringify({ type: 'pong' }));
+            break;
+        case 'getDebugState':
+            try {
+                const debugState = getDebugState(msg.mode, msg.key);
+                send(socketId, JSON.stringify({ type: 'debugState', mode: msg.mode, state: debugState }));
+            } catch (error) {
+                send(socketId, JSON.stringify({ type: 'debugStateError', mode: msg.mode, error: error.message }));
+            }
             break;
     }
 }

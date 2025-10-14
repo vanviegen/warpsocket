@@ -118,3 +118,4 @@ test('responses come from different workers when threads>1', async () => {
   // Check if remaining clients received the message (clients 2-7, since 0 and 1 are disconnected)
   await Promise.all(clients.slice(2).map((ws) => onceMessageOfType(ws, 'published', 5000)));
 });
+
