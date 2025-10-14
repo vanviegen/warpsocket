@@ -28,9 +28,10 @@ test('getDebugState with workers mode - with active server', async () => {
   const workers = response.state;
 
   // Should have 2 workers
-  assert.strictEqual(workers.length, 2);
-  workers.forEach(worker => {
-    assert.strictEqual(typeof worker.workerId, 'number');
+  const workerIds = Object.keys(workers).map(id => parseInt(id));
+  assert.strictEqual(workerIds.length, 2);
+  workerIds.forEach(workerId => {
+    const worker = workers[workerId];
     assert.strictEqual(typeof worker.hasTextHandler, 'boolean');
     assert.strictEqual(typeof worker.hasBinaryHandler, 'boolean');
     assert.strictEqual(typeof worker.hasCloseHandler, 'boolean');
@@ -39,9 +40,9 @@ test('getDebugState with workers mode - with active server', async () => {
 
   // Test getting a specific worker using a separate WebSocket
   const ws2 = await createWebSocket(url);
-  ws2.send(JSON.stringify({ type: 'getDebugState', mode: 'workers', key: workers[0].workerId }));
+  ws2.send(JSON.stringify({ type: 'getDebugState', mode: 'workers', key: workerIds[0] }));
   const specificResponse = await onceMessageOfType(ws2, 'debugState');
-  assert.deepStrictEqual(specificResponse.state, workers[0]);
+  assert.deepStrictEqual(specificResponse.state, workers[workerIds[0]]);
   ws2.close();
 
   // Test getting a non-existent worker using a separate WebSocket
@@ -73,18 +74,19 @@ test('getDebugState with sockets mode - with active connections', async () => {
   const sockets = response.state;
 
   // Should have 2 sockets
-  assert.strictEqual(sockets.length, 2);
-  sockets.forEach(socket => {
-    assert.strictEqual(typeof socket.socketId, 'number');
+  const socketIds = Object.keys(sockets).map(id => parseInt(id));
+  assert.strictEqual(socketIds.length, 2);
+  socketIds.forEach(socketId => {
+    const socket = sockets[socketId];
     assert.strictEqual(typeof socket.ip, 'string');
     assert.strictEqual(typeof socket.workerId, 'number');
   });
 
   // Test getting a specific socket using a separate WebSocket
   const ws3 = await createWebSocket(url);
-  ws3.send(JSON.stringify({ type: 'getDebugState', mode: 'sockets', key: sockets[0].socketId }));
+  ws3.send(JSON.stringify({ type: 'getDebugState', mode: 'sockets', key: socketIds[0] }));
   const specificResponse = await onceMessageOfType(ws3, 'debugState');
-  assert.deepStrictEqual(specificResponse.state, sockets[0]);
+  assert.deepStrictEqual(specificResponse.state, sockets[socketIds[0]]);
   ws3.close();
 
   // Test getting a non-existent socket using a separate WebSocket

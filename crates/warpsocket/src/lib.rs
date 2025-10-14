@@ -992,10 +992,8 @@ fn channel_to_object<'a>(cx: &mut FunctionContext<'a>, channel_name: &[u8], subs
     Ok(obj)
 }
 
-fn socket_to_object<'a>(cx: &mut FunctionContext<'a>, socket_id: u64, socket_entry: &SocketEntry) -> NeonResult<Handle<'a, JsObject>> {
+fn socket_to_object<'a>(cx: &mut FunctionContext<'a>, socket_entry: &SocketEntry) -> NeonResult<Handle<'a, JsObject>> {
     let obj = cx.empty_object();
-    let socket_id_num = cx.number(socket_id as f64);
-    obj.set(cx, "socketId", socket_id_num)?;
     match socket_entry {
         SocketEntry::Actual { ip, worker_id, .. } => {
             let ip_str = cx.string(ip.to_string());
@@ -1015,10 +1013,8 @@ fn socket_to_object<'a>(cx: &mut FunctionContext<'a>, socket_id: u64, socket_ent
     Ok(obj)
 }
 
-fn worker_to_object<'a>(cx: &mut FunctionContext<'a>, worker_id: u32, worker: &Worker) -> NeonResult<Handle<'a, JsObject>> {
+fn worker_to_object<'a>(cx: &mut FunctionContext<'a>, worker: &Worker) -> NeonResult<Handle<'a, JsObject>> {
     let obj = cx.empty_object();
-    let worker_id_num = cx.number(worker_id as f64);
-    obj.set(cx, "workerId", worker_id_num)?;
     let has_text = cx.boolean(worker.text_message_handler.is_some());
     obj.set(cx, "hasTextHandler", has_text)?;
     let has_binary = cx.boolean(worker.binary_message_handler.is_some());
@@ -1089,38 +1085,38 @@ fn get_debug_state(mut cx: FunctionContext) -> JsResult<JsValue> {
             let single_key_opt: Option<u64> = read_arg_opt!(&mut cx, 1, u64);
             if let Some(id) = single_key_opt {
                 if let Some(socket_entry) = SOCKETS.get(&id) {
-                    let obj = socket_to_object(&mut cx, id, socket_entry.value())?;
+                    let obj = socket_to_object(&mut cx, socket_entry.value())?;
                     Ok(obj.upcast())
                 } else {
                     Ok(cx.undefined().upcast())
                 }
             } else {
-                let js_array = cx.empty_array();
-                for (i, entry) in SOCKETS.iter().enumerate() {
-                    if i >= 2000 { break; }
-                    let obj = socket_to_object(&mut cx, *entry.key(), entry.value())?;
-                    js_array.set(&mut cx, i as u32, obj)?;
+                let js_obj = cx.empty_object();
+                for entry in SOCKETS.iter() {
+                    let obj = socket_to_object(&mut cx, entry.value())?;
+                    let socket_id_str = entry.key().to_string();
+                    js_obj.set(&mut cx, socket_id_str.as_str(), obj)?;
                 }
-                Ok(js_array.upcast())
+                Ok(js_obj.upcast())
             }
         }
         "workers" => {
             let single_key_opt: Option<u32> = read_arg_opt!(&mut cx, 1, u32);
             if let Some(id) = single_key_opt {
                 if let Some(worker) = WORKERS.get(&id) {
-                    let obj = worker_to_object(&mut cx, id, worker.value())?;
+                    let obj = worker_to_object(&mut cx, worker.value())?;
                     Ok(obj.upcast())
                 } else {
                     Ok(cx.undefined().upcast())
                 }
             } else {
-                let js_array = cx.empty_array();
-                for (i, entry) in WORKERS.iter().enumerate() {
-                    if i >= 2000 { break; }
-                    let obj = worker_to_object(&mut cx, *entry.key(), entry.value())?;
-                    js_array.set(&mut cx, i as u32, obj)?;
+                let js_obj = cx.empty_object();
+                for entry in WORKERS.iter() {
+                    let obj = worker_to_object(&mut cx, entry.value())?;
+                    let worker_id_str = entry.key().to_string();
+                    js_obj.set(&mut cx, worker_id_str.as_str(), obj)?;
                 }
-                Ok(js_array.upcast())
+                Ok(js_obj.upcast())
             }
         }
         "kv" => {

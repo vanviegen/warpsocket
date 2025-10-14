@@ -328,6 +328,12 @@ Atomically updates a key only when its current value matches the expected check 
 
 **Returns:** true when the compare-and-set succeeds, false otherwise.
 
+### getDebugState · constant
+
+Retrieves debug state information about the internal WarpSocket data structures.
+
+**Value:** `{ (mode: "channels"): ChannelDebug[]; (mode: "channels", channelName: string | ArrayBuffer | Uint8Array<ArrayBufferLike>): ChannelDebug; (mode: "channels", filterSocketId: number): ChannelDebug[]; (mode: "sockets"): Record<...>; (mode: "sockets", socketId: number): SocketDebug; (mode: "workers"): Record<...>; (mode:...`
+
 ## Examples
 
 ### Chat Server

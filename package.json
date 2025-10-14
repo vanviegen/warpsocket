@@ -1,6 +1,6 @@
 {
   "name": "warpsocket",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Node-API addon for writing high-performance multi-threaded WebSocket servers.",
   "scripts": {
     "build": "tsc && node ./build-addon.js",
@@ -38,14 +38,13 @@
     "dist/src/**",
     "build/linux-x64.node"
   ],
-  "dependencies": {},
   "devDependencies": {
     "@tsconfig/node20": "^20.1.4",
     "@types/node": "^20.11.16",
+    "portfinder": "^1.0.32",
     "readme-tsdoc": "^1.1.4",
     "sirv": "^3.0.1",
     "typescript": "^5.3.3",
-    "ws": "^8.18.0",
-    "portfinder": "^1.0.32"
+    "ws": "^8.18.0"
   }
 }
