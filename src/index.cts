@@ -99,6 +99,7 @@ function startMonitoring() {
                 addon.deregisterWorkerThread(workerId);
                 worker.worker.terminate();
                 spawnWorker(); // Start a replacement worker
+                continue; // Don't ping a terminated worker
             }
 
             worker.worker.postMessage({ type: '__ping', timestamp: now });
@@ -112,7 +113,7 @@ function startMonitoring() {
     }, 500); // Check twice per second
 }
 
-let workerData: {workerPath: string, workerArg: any} | undefined;
+let workerData: {workerPath: string, workerArg: any, nodePath: string} | undefined;
 
 
 /** 
@@ -154,7 +155,7 @@ export async function start(options: { bind: string | string[], workerPath?: str
     if (!pathMod.isAbsolute(options.workerPath)) {
         options.workerPath = pathMod.resolve(process.cwd(), options.workerPath);
     }
-    workerData = {workerPath: options.workerPath, workerArg: options.workerArg};
+    workerData = {workerPath: options.workerPath, workerArg: options.workerArg, nodePath: (addon as any).__nodePath};
 
     options.threads = options.threads == null ? Math.max(os.cpus()?.length || 1, 4) : Math.max(1, 0|options.threads);
 
@@ -179,7 +180,15 @@ export async function start(options: { bind: string | string[], workerPath?: str
 
 const BOOTSTRAP_WORKER = `
 const { workerData, parentPort } = require('node:worker_threads');
-const addon = require('warpsocket/addon-loader');
+
+// Load the native addon directly via process.dlopen instead of require('warpsocket/addon-loader').
+// Bun (as of v1.3.11) has a bug (?) where require() in eval'd worker threads returns a cached module
+// object with stale/non-functional napi function bindings from the main thread's isolate.
+// Using process.dlopen ensures neon properly initializes fresh function bindings for this
+// worker's V8/JSC isolate, sharing the same underlying native statics (DashMaps, atomics, etc.).
+const addon = { exports: {} };
+process.dlopen(addon, workerData.nodePath);
+const nativeAddon = addon.exports;
 
 // Handle ping messages from main thread
 parentPort.on('message', (msg) => {
@@ -196,7 +205,7 @@ parentPort.on('message', (msg) => {
         await workerModule.handleStart(workerData.workerArg);
     }
     
-    const workerId = addon.registerWorkerThread(workerModule);
+    const workerId = nativeAddon.registerWorkerThread(workerModule);
     parentPort.postMessage({ type: 'registered', workerId });
 })();
 `;
@@ -214,6 +223,33 @@ function spawnWorker(): Promise<void> {
         w.on('message', (msg) => {
             if (msg && (msg as any).type === 'registered') {
                 workerId = (msg as any).workerId;
+
+                // Worker IDs are 1-based. A return of 0 (or non-positive) means the native
+                // registerWorkerThread call was a no-op — likely due to a stale cached module
+                // object in the runtime (a known Bun bug with napi addons in worker threads).
+                if (!workerId || workerId <= 0) {
+                    reject(new Error(
+                        `warpsocket: registerWorkerThread returned invalid worker_id=${workerId}. ` +
+                        `The native addon may not be functioning correctly in worker threads. ` +
+                        `Loaded from: ${workerData!.nodePath}`
+                    ));
+                    w.terminate();
+                    return;
+                }
+
+                // Verify the main thread can actually see this worker in the shared native state.
+                // If this fails, the worker loaded a separate copy of the native addon.
+                const debugState = addon.getDebugState('workers', workerId);
+                if (!debugState) {
+                    reject(new Error(
+                        `warpsocket: worker registered with id=${workerId} but main thread ` +
+                        `cannot see it via getDebugState. The worker may have loaded a separate ` +
+                        `instance of the native addon. Loaded from: ${workerData!.nodePath}`
+                    ));
+                    w.terminate();
+                    return;
+                }
+
                 workers.set(workerId, {worker: w, lastSeen: Date.now()});
                 // console.log(`WarpSocket worker #${workerId} registered`);
                 startMonitoring(); // Start monitoring when we have workers

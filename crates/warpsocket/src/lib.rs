@@ -132,7 +132,7 @@ lazy_static! {
 // Atomic counter for generating unique socket IDs
 static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(1);
 // Atomic counter for generating unique worker thread IDs
-static WORKER_COUNTER: AtomicU32 = AtomicU32::new(0);
+static WORKER_COUNTER: AtomicU32 = AtomicU32::new(1);
 // Round-robin counter for worker selection
 static ROUND_ROBIN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -400,8 +400,6 @@ fn register_worker_thread(mut cx: FunctionContext) -> JsResult<JsNumber> {
 fn deregister_worker_thread(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let worker_id = read_arg!(&mut cx, 0, u32);
     let result = if let Some((_, _worker)) = WORKERS.remove(&worker_id) {
-        eprintln!("Removed worker {} from pool", worker_id);
-
         // Remove from the worker IDs list
         let mut worker_ids = WORKER_IDS.write().unwrap();
         worker_ids.retain(|&id| id != worker_id);
